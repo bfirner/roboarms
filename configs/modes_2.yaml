@@ -1,0 +1,35 @@
+#port: /dev/arm2
+port: /dev/ttyUSB1
+
+groups:
+  arm:
+    operating_mode: position
+    profile_type: time
+    profile_velocity: 2000
+    profile_acceleration: 300
+    torque_enable: true
+
+singles:
+  gripper:
+    operating_mode: pwm
+    torque_enable: true
+
+# Calibration information. At rest position.
+# name:
+# - waist
+# - shoulder
+# - elbow
+# - wrist_angle
+# - wrist_rotate
+# - gripper
+# - left_finger
+# - right_finger
+# position:
+# - -0.019941750913858414
+# - -1.6889128684997559
+# - 1.7211264371871948
+# - 0.40036898851394653
+# - -0.023009711876511574
+# - -0.11504856497049332
+# - 0.01795259676873684
+# - -0.01795259676873684

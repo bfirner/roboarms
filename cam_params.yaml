@@ -1,0 +1,13 @@
+/**:
+  ros__parameters:
+    video_device: /dev/video2
+    pixel_format: YUYV
+    output_encoding: rgb8
+    image_size: [1280, 720]
+
+
+# Run video collection with:
+# ros2 run v4l2_camera v4l2_camera_node --ros-args --params-file cam_params.yaml
+#
+# To view the images, run:
+# ros2 run rqt_image_view rqt_image_view /image_raw/compressed

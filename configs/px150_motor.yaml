@@ -1,0 +1,140 @@
+port: /dev/ttyDXL
+
+# USB latency on linux
+#  # cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+# 16
+# echo 1 > /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+# cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+# 1
+
+# TODO Increase PID gain: Position_P_Gain register (no more than a few hundred points above default)
+# The P is from PID. There are also gains for I and D.
+# Set Position_P_Gain to 1000, 1500, 2000
+# Posibly inside of /root/interbotix_ws/install/interbotix_xsarm_control/share/interbotix_xsarm_control/config/px150.yaml
+# Should be able to check register values with a command like this:
+# ros2 service call /arm1/get_motor_registers interbotix_xs_msgs/srv/RegisterValues "{cmd_type: 'group', name: 'arm', reg: 'Position_P_Gain'}"
+# Check the robot state like this:
+# ros2 service call /arm1/get_robot_info interbotix_xs_msgs/srv/RobotInfo "{cmd_type: 'group', name: 'arm'}"
+# ros2 service call /arm1/get_robot_info interbotix_xs_msgs/srv/RobotInfo "{cmd_type: 'single', name: 'gripper'}"
+#
+# Motor gain requests look like this:
+# ros2 service call /arm1/set_motor_pid_gains interbotix_xs_msgs/srv/MotorGains
+# > requester: making request: interbotix_xs_msgs.srv.MotorGains_Request(cmd_type='', name='', kp_pos=0, ki_pos=0, kd_pos=0, k1=0, k2=0, kp_vel=0, ki_vel=0)
+# And registers:
+# ros2 service call /arm1/set_motor_registers interbotix_xs_msgs/srv/RegisterValues
+# > requester: making request: interbotix_xs_msgs.srv.RegisterValues_Request(cmd_type='', name='', reg='', value=0)
+#
+# P gain default is:
+# requester: making request: interbotix_xs_msgs.srv.RegisterValues_Request(cmd_type='group', name='arm', reg='Position_P_Gain', value=0)
+#
+# response:
+# interbotix_xs_msgs.srv.RegisterValues_Response(values=[640, 640, 640, 640, 640])
+
+joint_order: [waist, shoulder, elbow, wrist_angle, wrist_rotate, gripper]
+sleep_positions: [0, -1.80, 1.55, 0.8, 0, 0]
+
+joint_state_publisher:
+  update_rate: 100
+  publish_states: true
+  topic_name: joint_states
+
+groups:
+  arm: [waist, shoulder, elbow, wrist_angle, wrist_rotate]
+
+grippers:
+  gripper:
+    horn_radius: 0.014
+    arm_length: 0.024
+    left_finger: left_finger
+    right_finger: right_finger
+
+shadows:
+  shoulder:
+    shadow_list: [shoulder_shadow]
+    calibrate: true
+  elbow:
+    shadow_list: [elbow_shadow]
+    calibrate: true
+
+sisters:
+
+motors:
+  waist:
+    ID: 1
+    Baud_Rate: 3
+    Return_Delay_Time: 0
+    Drive_Mode: 0
+    Velocity_Limit: 131
+    Min_Position_Limit: 0
+    Max_Position_Limit: 4095
+    Secondary_ID: 255
+
+  shoulder:
+    ID: 2
+    Baud_Rate: 3
+    Return_Delay_Time: 0
+    Drive_Mode: 0
+    Velocity_Limit: 131
+    Min_Position_Limit: 762
+    Max_Position_Limit: 3311
+    Secondary_ID: 255
+
+  shoulder_shadow:
+    ID: 3
+    Baud_Rate: 3
+    Return_Delay_Time: 0
+    Drive_Mode: 1
+    Velocity_Limit: 131
+    Min_Position_Limit: 762
+    Max_Position_Limit: 3311
+    Secondary_ID: 2
+
+  elbow:
+    ID: 4
+    Baud_Rate: 3
+    Return_Delay_Time: 0
+    Drive_Mode: 0
+    Velocity_Limit: 131
+    Min_Position_Limit: 682
+    Max_Position_Limit: 3129
+    Secondary_ID: 255
+
+  elbow_shadow:
+    ID: 5
+    Baud_Rate: 3
+    Return_Delay_Time: 0
+    Drive_Mode: 1
+    Velocity_Limit: 131
+    Min_Position_Limit: 682
+    Max_Position_Limit: 3129
+    Secondary_ID: 4
+
+  wrist_angle:
+    ID: 6
+    Baud_Rate: 3
+    Return_Delay_Time: 0
+    Drive_Mode: 1
+    Velocity_Limit: 131
+    Min_Position_Limit: 910
+    Max_Position_Limit: 3447
+    Secondary_ID: 255
+
+  wrist_rotate:
+    ID: 7
+    Baud_Rate: 3
+    Return_Delay_Time: 0
+    Drive_Mode: 0
+    Velocity_Limit: 131
+    Min_Position_Limit: 0
+    Max_Position_Limit: 4095
+    Secondary_ID: 255
+
+  gripper:
+    ID: 8
+    Baud_Rate: 3
+    Return_Delay_Time: 0
+    Drive_Mode: 0
+    Velocity_Limit: 131
+    Min_Position_Limit: 0
+    Max_Position_Limit: 4095
+    Secondary_ID: 255

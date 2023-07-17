@@ -1,0 +1,17 @@
+# Servo locations when the arm is extended backwards and the wrist is resting on the ground
+# the arm) 
+waist:         0.019941750913858414
+shoulder:      -1.7932236194610596
+elbow:         -1.9159420728683472
+wrist_angle:   0.5798447728157043
+wrist_rotate:  -0.003067961661145091
+gripper:       1.2808740139007568
+left_finger:   0.03707965835928917
+right_finger:  -0.03707965835928917
+
+
+
+
+
+
+
