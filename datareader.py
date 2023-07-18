@@ -28,11 +28,12 @@ arrow_down  = 84
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument('bag_path', type=str)
     p.add_argument('--train_robot', default='arm2')
-    p.add_argument('--bag_path', required=True, type=str)
     # TODO Use. Determines if all data should be preloaded or read sequentially. Speeds up labelling
     # operations.
-    p.add_argument('--preload', required=False, default=False)
+    p.add_argument('--preload', required=False, default=False, action='store_true',
+        help="Preload rosbag records for faster labelling.")
     # Path to the label file.
     p.add_argument('--label_file', default=None)
 
@@ -63,16 +64,23 @@ def main():
     # Print the messages stored in the bag.
     #print(f'All message data records:')
     #print(reader.records)
-    record_idx = 0
-    if not args.preload:
+    if args.preload:
+        print("Loading records.")
+        records = list(reader)
+        print("Done!")
+    else:
         I = reader.__iter__()
     finished = False
+    record_idx = 0
+    next_record = 1
     while not finished:
         # Advance to the next record
         if args.preload:
-            if record_idx + 1 < len(reader.records()):
+            # Keep the records in range
+            next_record = min(0, max(len(records)-1, next_record))
+            if record_idx + 1 < len(records):
                 record_idx += 1
-                record = reader.records()[record_idx]
+                record = records[record_idx]
         else:
             try:
                 record = I.__next__()
@@ -85,6 +93,7 @@ def main():
             print('\t', record['position'])
             print('\t', record['velocity'])
             print('\t', record['effort'])
+            next_record += 1
         if record['topic'] == image_topic:
             print('\t', record['format'])
             bytestr = bytes(record['data'])
@@ -116,6 +125,7 @@ def main():
         if record['topic'] == camera_info:
             print('\t', record['height'])
             print('\t', record['width'])
+            next_record += 1
 
     # Remove the window
     cv2.destroyAllWindows()
