@@ -126,6 +126,8 @@ def main():
     p.add_argument('--train_robot', default='arm2')
     p.add_argument('--video_scale', required=False, default=1.0, type=float,
         help="The default video scale during labelling.")
+    p.add_argument('--frame_history', required=False, default=60.0, type=float,
+        help="The number of frames that the user can easily go backwards.")
     # Path to the label file.
     p.add_argument('--label_file', default=None)
 
@@ -218,45 +220,75 @@ def main():
     )
 
     cur_frame = -1
-    next_frame = 0
+    # next_frame is a relative position to the cur_frame variable.
+    # Initialize it to advance to frame 0.
+    next_frame = 1
     cur_record = 0
 
     finished = False
+
+    # Keep a limited buffer of past frames so that we can go backwards
+    past_frame_buffer = []
 
     while cur_frame < total_frames and not finished:
         # TODO FIXME Actually look at the "next_frame" variable. Somehow support going backwards,
         # which will involve cacheing the past frames or figuring out how the ffmpeg-python bindings
         # support seeking.
-        # Fetch the next frame
-        print(f"Reading frame {cur_frame}")
-        in_bytes = input_process.stdout.read(int(width * height * channels * (args.video_scale**2)))
-        #in_bytes = input_process.stdout.read(None)
-        if in_bytes:
-            # Convert to numpy, and then to a display image
-            np_frame = numpy.frombuffer(in_bytes, numpy.uint8).reshape(height, width, channels)
-            #in_frame = in_frame.permute(0, 3, 1, 2).to(dtype=torch.float).cuda()
-            cur_frame += 1
-            next_frame = cur_frame
 
+        # Check if we should look into the past frame buffer and if that past frame is present.
+        if 0 > next_frame:
+            # Don't try to go back past what is in the history.
+            next_frame = max(-len(past_frame_buffer)+1, next_frame)
+            # Note that as long as we've gone through the loop at least once then there should be at
+            # least one frame in the buffer.
+            np_frame = numpy.copy(past_frame_buffer[next_frame])
+        elif 0 < next_frame:
+            # Check if the frame needs to advance.
+            while 0 < next_frame:
+                # Fetch the next frame
+                in_bytes = input_process.stdout.read(int(width * height * channels * (args.video_scale**2)))
+                #in_bytes = input_process.stdout.read(None)
+                if in_bytes:
+                    # Convert to numpy, and then to a display image
+                    np_frame = numpy.frombuffer(in_bytes, numpy.uint8).reshape(height, width, channels)
+                    #in_frame = in_frame.permute(0, 3, 1, 2).to(dtype=torch.float).cuda()
+                    # Adjust the frame position. The next_frame variable is relative to the cur_frame.
+                    cur_frame += 1
+                    next_frame -= 1
 
-            # Print some stuff for the UI:
-            y = int(height * 0.8)
-            x = int(width * 0.1)
-            color = (1.0, 1.0, 1.0)
-            thickness = 3.0
-            cv2.putText(img=np_frame, text="Frame: {}".format(cur_frame), org=(x, y),
-                fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=8)
+                    # Buffer a copy of this frame and maintain the maximum buffer size.
+                    past_frame_buffer.append(numpy.copy(np_frame))
+                    if (len(past_frame_buffer) > args.frame_history):
+                        past_frame_buffer = past_frame_buffer[1:]
 
-            cv2.imshow("arm video", np_frame)
+                else:
+                    # We reached the end of the video before reaching the desired end frame somehow.
+                    input_process.wait()
+                    print("Reached the end of the video.")
+                    return
         else:
-            # We reached the end of the video before reaching the desired end frame somehow.
-            input_process.wait()
-            print("Reached the end of the video.")
-            return
+            # Otherise refresh the frame buffer with the last fetched frame
+            np_frame = numpy.copy(past_frame_buffer[-1])
+
+
+        # Print some stuff for the UI:
+        y = int(height * 0.8)
+        x = int(width * 0.1)
+        color = (1.0, 1.0, 1.0)
+        thickness = 3.0
+        frame_str = "Frame: {}".format(cur_frame)
+        if 0 > next_frame:
+            frame_str = "{} {}".format(frame_str, next_frame)
+        frame_str = "{} / {}".format(frame_str, total_frames)
+        cv2.putText(img=np_frame, text=frame_str, org=(x, y),
+            fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=6)
+
+        # Display the frame.
+        cv2.imshow("arm video", np_frame)
 
         # Get the current timestamp and then interpolate to find the position, velocity, and effort
         # values that correspond to it.
-        cur_time = video_timestamps[cur_frame]
+        cur_time = video_timestamps[cur_frame + next_frame]
 
         # arm_records has values for the position, velocity, and effort keys
         # Time is in the time field
@@ -269,6 +301,9 @@ def main():
         if cur_record >= len(arm_records):
             print("Ran out of records to label this video.")
             return
+        elif cur_record < 0:
+            print("Video begins before arm records.")
+            return
         else:
             # Interpolate this arm record and the previous record to get the sensor values that
             # correspond to the current frame.
@@ -276,17 +311,28 @@ def main():
             pass
 
         # Keep processing user input until they change the frame or want to exit the program.
-        while not finished and next_frame == cur_frame:
+        action = False
+        while not finished and not action:
                 inkey = cv2.waitKey(0)
                 # Finish if the user inputs q
                 finished = isKey(inkey, ord('q'))
                 if isKey(inkey, arrow_right):
                     next_frame += 1
+                    action = True
                 elif isKey(inkey, arrow_left):
                     next_frame -= 1
+                    action = True
+                elif isKey(inkey, arrow_up):
+                    next_frame += 30
+                    action = True
+                elif isKey(inkey, arrow_down):
+                    next_frame -= 30
+                    action = True
                 # TODO Use the returned key value for labelling.
                 # Save the per-frame segment labels into the file located at args.label_file
                 # TODO Add function to save
+                # TODO Add function to toggle labelling as "use" or "do not use"
+                # TODO Add function to mark the end of a maneuver
 
     # Remove the window
     cv2.destroyAllWindows()
