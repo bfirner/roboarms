@@ -82,6 +82,43 @@ def getVideoInfo(video_path):
     return width, height, total_frames
 
 
+def readArmRecords(bag_path, arm_topic):
+    reader = Reader(filepath=bag_path, topics=[arm_topic])
+
+    # Print the topics.
+    print(f'The bag contains the following topics:')
+    print(reader.topics)
+    
+    # Print the mapping between topics and message types.
+    print(f'The message types associated with each topic are as follows:')
+    print(reader.type_map)
+
+
+    # The entire ros2bag can be fetched with reader.records(), which preloads and caches the result.
+    # This is the preferred method of labelling, so long as we can guarantee that enough memory will
+    # always be available.
+    print("Loading rosbag records.")
+    # TODO FIXME Extract the desired records and store them by timestamp. The records look like
+    # this:
+    # {'topic': '/arm2/joint_states', 'time_ns': 1689788069723452912, 'type': 'sensor_msgs/msg/JointState', 'header': OrderedDict([('stamp', OrderedDict([('sec', 1689788069), ('nanosec', 723357753)])), ('frame_id', '')]), 'name': ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate', 'gripper', 'left_finger', 'right_finger'], 'position': [0.015339808538556099, -1.7180585861206055, 1.7226604223251343, -1.7548741102218628, -0.023009711876511574, -0.5875146389007568, 0.013221289031207561, -0.013221289031207561], 'velocity': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 'effort': [0.0, 0.0, 0.0, 5.380000114440918, -2.690000057220459, 0.0, 0.0, 0.0]}
+    arm_records = []
+    for record in reader:
+        if record['topic'] == arm_topic:
+            time_sec = int(record['header']['stamp']['sec'])
+            time_ns = int(record['header']['stamp']['nanosec'])
+            # TODO FIXME Correct the positions using the calibration values for this arm
+            data = {
+                'timestamp': time_sec * 10**9 + time_ns,
+                'name': record['name'],
+                'position': record['position'],
+                'velocity': record['velocity'],
+                'effort': record['effort'],
+            }
+            arm_records.append(data)
+    print("Done!")
+    return arm_records
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('bag_path', type=str,
@@ -159,38 +196,14 @@ def main():
         video_timestamps.append(time_sec * 10**9 + time_ns)
     time_csv_file.close()
 
-    # Open the rosbag db file.
+    # Open the rosbag db file and read the arm topic
     arm_topic = f"/{args.train_robot}/joint_states"
-    camera_info = "/camera_info"
-    reader = Reader(filepath=args.bag_path, topics=[arm_topic])
-
-    # Print the topics.
-    print(f'The bag contains the following topics:')
-    print(reader.topics)
-    
-    # Print the mapping between topics and message types.
-    print(f'The message types associated with each topic are as follows:')
-    print(reader.type_map)
-
-
-    # The entire ros2bag can be fetched with reader.records(), which preloads and caches the result.
-    # This is the preferred method of labelling, so long as we can guarantee that enough memory will
-    # always be available.
-    print("Loading rosbag records.")
-    arm_records = list(reader)
-    print("Done!")
-
-    # There is only one topic in the records (the joint states messages) alreadyh in time order.
+    arm_records = readArmRecords(args.bag_path, arm_topic)
 
 
     # Now go through video frames.
-    # Prepare a font for label UI. Just using the default font for now.
-    try:
-        font = ImageFont.truetype(font="DejaVuSans.ttf", size=14)
-    except OSError:
-        font = ImageFont.load_default()
-
     width, height, total_frames = getVideoInfo(vid_path)
+    print("Found {} frames in the video.".format(total_frames))
 
     # Begin the video input process from ffmpeg.
     # Read as 3 channel rgb24 images
@@ -204,12 +217,16 @@ def main():
         .run_async(pipe_stdout=True, quiet=True)
     )
 
-    cur_frame = 0
+    cur_frame = -1
+    next_frame = 0
     cur_record = 0
 
     finished = False
 
     while cur_frame < total_frames and not finished:
+        # TODO FIXME Actually look at the "next_frame" variable. Somehow support going backwards,
+        # which will involve cacheing the past frames or figuring out how the ffmpeg-python bindings
+        # support seeking.
         # Fetch the next frame
         print(f"Reading frame {cur_frame}")
         in_bytes = input_process.stdout.read(int(width * height * channels * (args.video_scale**2)))
@@ -218,6 +235,8 @@ def main():
             # Convert to numpy, and then to a display image
             np_frame = numpy.frombuffer(in_bytes, numpy.uint8).reshape(height, width, channels)
             #in_frame = in_frame.permute(0, 3, 1, 2).to(dtype=torch.float).cuda()
+            cur_frame += 1
+            next_frame = cur_frame
 
 
             # Print some stuff for the UI:
@@ -243,11 +262,31 @@ def main():
         # Time is in the time field
         # Find the first record with a timestamp greater than the image time
         print("record is {}".format(arm_records[cur_record]))
+        while (0 <= cur_record and arm_records[cur_record]['timestamp'] > cur_time):
+            cur_record -= 1
         while (cur_record < len(arm_records) and arm_records[cur_record]['timestamp'] < cur_time):
             cur_record += 1
         if cur_record >= len(arm_records):
             print("Ran out of records to label this video.")
             return
+        else:
+            # Interpolate this arm record and the previous record to get the sensor values that
+            # correspond to the current frame.
+            # TODO
+            pass
+
+        # Keep processing user input until they change the frame or want to exit the program.
+        while not finished and next_frame == cur_frame:
+                inkey = cv2.waitKey(0)
+                # Finish if the user inputs q
+                finished = isKey(inkey, ord('q'))
+                if isKey(inkey, arrow_right):
+                    next_frame += 1
+                elif isKey(inkey, arrow_left):
+                    next_frame -= 1
+                # TODO Use the returned key value for labelling.
+                # Save the per-frame segment labels into the file located at args.label_file
+                # TODO Add function to save
 
     # Remove the window
     cv2.destroyAllWindows()
