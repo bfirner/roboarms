@@ -343,7 +343,8 @@ def main():
         cv2.putText(img=np_frame, text=frame_str, org=(x, y),
             fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=6)
         y = int(height * 0.9)
-        frame_str = "Labelling {}, cur segment: {}".format(label_on, cur_segment)
+        frame_str = "Labelling {}, cur segment: {}".format(label_on,
+            labels['behavior'][cur_frame+next_frame])
         cv2.putText(img=np_frame, text=frame_str, org=(x, y),
             fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=6)
 
