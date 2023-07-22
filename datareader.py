@@ -16,6 +16,7 @@ import numpy
 import os
 import pathlib
 import sys
+import yaml
 
 from nml_bag import Reader
 # For annotation drawing
@@ -98,7 +99,7 @@ def readArmRecords(bag_path, arm_topic):
     # This is the preferred method of labelling, so long as we can guarantee that enough memory will
     # always be available.
     print("Loading rosbag records.")
-    # TODO FIXME Extract the desired records and store them by timestamp. The records look like
+    # Extract the desired records and store them by timestamp. The records look like
     # this:
     # {'topic': '/arm2/joint_states', 'time_ns': 1689788069723452912, 'type': 'sensor_msgs/msg/JointState', 'header': OrderedDict([('stamp', OrderedDict([('sec', 1689788069), ('nanosec', 723357753)])), ('frame_id', '')]), 'name': ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate', 'gripper', 'left_finger', 'right_finger'], 'position': [0.015339808538556099, -1.7180585861206055, 1.7226604223251343, -1.7548741102218628, -0.023009711876511574, -0.5875146389007568, 0.013221289031207561, -0.013221289031207561], 'velocity': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 'effort': [0.0, 0.0, 0.0, 5.380000114440918, -2.690000057220459, 0.0, 0.0, 0.0]}
     arm_records = []
@@ -117,6 +118,36 @@ def readArmRecords(bag_path, arm_topic):
             arm_records.append(data)
     print("Done!")
     return arm_records
+
+
+def readLabels(labels_path):
+    """Read the labels from a yaml file at the given path.
+
+    Arguments:
+        labels_path (str): Path to a yaml file.
+    Returns:
+        labels (dict): Dictionary of the labels
+    """
+    # If the labels aren't there then return an empty table.
+    if not os.path.exists(labels_path):
+        return {}
+    # TODO Should check to make sure that there aren't any errors during loading or parsing.
+    labels = yaml.load(io.open(labels_path, "r", newline=None), Loader=yaml.SafeLoader)
+    return labels
+
+
+def writeLabels(labels_path, labels):
+    """Write the labels into a yaml file at the given path.
+
+    Arguments:
+        labels_path (str): Path to a yaml file.
+        labels     (dict): The labels
+    """
+    # TODO Should check to make sure that there aren't any errors during writing.
+    # Open and truncate the file
+    label_file = io.open(labels_path, "w", newline=None)
+    label_file.write(yaml.dump(labels))
+    label_file.close()
 
 
 def main():
@@ -166,7 +197,7 @@ def main():
     vid_path = vid_paths[0]
 
     if args.label_file is None:
-        args.label_file = os.path.join(args.bag_path, "labels.csv")
+        args.label_file = os.path.join(args.bag_path, "labels.yaml")
 
     print(f"Labels will be saved to {args.label_file}")
 
