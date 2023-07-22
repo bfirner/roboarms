@@ -196,12 +196,8 @@ def main():
         return
     vid_path = vid_paths[0]
 
-    if args.label_file is None:
-        args.label_file = os.path.join(args.bag_path, "labels.yaml")
-
-    print(f"Labels will be saved to {args.label_file}")
-
-
+    ################
+    # Data loading
     # Set up readers for the timestamps, video, and database
 
     # TODO Technically this should be checked for failure.
@@ -233,7 +229,6 @@ def main():
     arm_topic = f"/{args.train_robot}/joint_states"
     arm_records = readArmRecords(args.bag_path, arm_topic)
 
-
     # Now go through video frames.
     width, height, total_frames = getVideoInfo(vid_path)
     print("Found {} frames in the video.".format(total_frames))
@@ -249,6 +244,29 @@ def main():
         .output('pipe:', format='rawvideo', pix_fmt='rgb24')
         .run_async(pipe_stdout=True, quiet=True)
     )
+    
+    ################
+    # Labelling setup
+    if args.label_file is None:
+        args.label_file = os.path.join(args.bag_path, "labels.yaml")
+
+    print(f"Labels will be saved to {args.label_file}")
+    labels = readLabels(args.label_file)
+    # Start with default values if the labels are empty.
+    if {} == labels:
+        # Segment behaviors
+        labels['behavior'] = [None for i in range(total_frames)]
+        # Maneuver begin and end marks
+        labels['begin_mark'] = [None for i in range(total_frames)]
+        labels['end_mark'] = [None for i in range(total_frames)]
+
+    # Labelling state
+    label_on = False
+    cur_segment = None
+
+
+    ################
+    # UI Loop
 
     cur_frame = -1
     # next_frame is a relative position to the cur_frame variable.
@@ -270,9 +288,16 @@ def main():
         if 0 > next_frame:
             # Don't try to go back past what is in the history.
             next_frame = max(-len(past_frame_buffer)+1, next_frame)
+            # Don't try to go before the first frame either
+            if 0 > cur_frame + next_frame:
+                next_frame = -cur_frame
             # Note that as long as we've gone through the loop at least once then there should be at
             # least one frame in the buffer.
             np_frame = numpy.copy(past_frame_buffer[next_frame])
+            if label_on and cur_segment is not None:
+                # Label from cur_frame+next_frame:cur_frame with cur_segment
+                labels['behavior'][cur_frame+next_frame:cur_frame] = cur_segment
+
         elif 0 < next_frame:
             # Check if the frame needs to advance.
             while 0 < next_frame:
@@ -286,6 +311,10 @@ def main():
                     # Adjust the frame position. The next_frame variable is relative to the cur_frame.
                     cur_frame += 1
                     next_frame -= 1
+
+                    # If labelling, then propagate the current segment label
+                    if label_on and cur_segment is not None:
+                        labels['behavior'][cur_frame] = cur_segment
 
                     # Buffer a copy of this frame and maintain the maximum buffer size.
                     past_frame_buffer.append(numpy.copy(np_frame))
@@ -311,6 +340,10 @@ def main():
         if 0 > next_frame:
             frame_str = "{} {}".format(frame_str, next_frame)
         frame_str = "{} / {}".format(frame_str, total_frames)
+        cv2.putText(img=np_frame, text=frame_str, org=(x, y),
+            fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=6)
+        y = int(height * 0.9)
+        frame_str = "Labelling {}, cur segment: {}".format(label_on, cur_segment)
         cv2.putText(img=np_frame, text=frame_str, org=(x, y),
             fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=6)
 
@@ -344,26 +377,54 @@ def main():
         # Keep processing user input until they change the frame or want to exit the program.
         action = False
         while not finished and not action:
-                inkey = cv2.waitKey(0)
-                # Finish if the user inputs q
-                finished = isKey(inkey, ord('q'))
-                if isKey(inkey, arrow_right):
-                    next_frame += 1
-                    action = True
-                elif isKey(inkey, arrow_left):
-                    next_frame -= 1
-                    action = True
-                elif isKey(inkey, arrow_up):
-                    next_frame += 30
-                    action = True
-                elif isKey(inkey, arrow_down):
-                    next_frame -= 30
-                    action = True
-                # TODO Use the returned key value for labelling.
-                # Save the per-frame segment labels into the file located at args.label_file
-                # TODO Add function to save
-                # TODO Add function to toggle labelling as "use" or "do not use"
-                # TODO Add function to mark the end of a maneuver
+            inkey = cv2.waitKey(0)
+            # Finish if the user inputs q
+            finished = isKey(inkey, ord('q'))
+            if isKey(inkey, arrow_right):
+                next_frame += 1
+                action = True
+            elif isKey(inkey, arrow_left):
+                next_frame -= 1
+                action = True
+            elif isKey(inkey, arrow_up):
+                next_frame += 30
+                action = True
+            elif isKey(inkey, arrow_down):
+                next_frame -= 30
+                action = True
+            elif isKey(inkey, ord('l')):
+                # Toggle labelling
+                label_on = not label_on
+                action = True
+            elif isKey(inkey, ord('s')):
+                writeLabels(args.label_file, labels)
+                print("Labels saved to {}".format(args.label_file))
+            elif isKey(inkey, ord('k')):
+                cur_segment = "keep"
+                action = True
+            elif isKey(inkey, ord('d')):
+                cur_segment = "discard"
+                action = True
+            elif isKey(inkey, ord('b')):
+                # TODO Mark the beginning of an action
+                pass
+            elif isKey(inkey, ord('e')):
+                # TODO Mark the beginning of an action
+                pass
+            elif isKey(inkey, ord('h')):
+                print("s: Save labels")
+                print("q: Quit (without saving)")
+                print("l: Toggle labelling on or off")
+                print("k: Mark segment as keep")
+                print("d: Mark segment as drop")
+                print("b: Mark action begin (not yet implemented)")
+                print("e: Mark action end (not yet implemented)")
+
+            # TODO Use the returned key value for labelling.
+            # Save the per-frame segment labels into the file located at args.label_file
+            # TODO Add function to save
+            # TODO Add function to toggle labelling as "use" or "do not use"
+            # TODO Add function to mark the end of a maneuver
 
     # Remove the window
     cv2.destroyAllWindows()
