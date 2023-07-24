@@ -157,8 +157,9 @@ def main():
     p.add_argument('--train_robot', default='arm2')
     p.add_argument('--video_scale', required=False, default=1.0, type=float,
         help="The default video scale during labelling.")
-    p.add_argument('--frame_history', required=False, default=60.0, type=float,
-        help="The number of frames that the user can easily go backwards.")
+    p.add_argument('--frame_history', required=False, default=90.0, type=float,
+        help="The number of frames that the user can easily go backwards."
+             "90 frames at 1920x1024 with 3 bytes per pixel is around 500MB.")
     # Path to the label file.
     p.add_argument('--label_file', default=None)
 
@@ -257,8 +258,7 @@ def main():
         # Segment behaviors
         labels['behavior'] = [None for i in range(total_frames)]
         # Maneuver begin and end marks
-        labels['begin_mark'] = [None for i in range(total_frames)]
-        labels['end_mark'] = [None for i in range(total_frames)]
+        labels['mark'] = [None for i in range(total_frames)]
 
     # Labelling state
     label_on = False
@@ -280,10 +280,6 @@ def main():
     past_frame_buffer = []
 
     while cur_frame < total_frames and not finished:
-        # TODO FIXME Actually look at the "next_frame" variable. Somehow support going backwards,
-        # which will involve cacheing the past frames or figuring out how the ffmpeg-python bindings
-        # support seeking.
-
         # Check if we should look into the past frame buffer and if that past frame is present.
         if 0 > next_frame:
             # Don't try to go back past what is in the history.
@@ -294,9 +290,15 @@ def main():
             # Note that as long as we've gone through the loop at least once then there should be at
             # least one frame in the buffer.
             np_frame = numpy.copy(past_frame_buffer[next_frame])
+            # Note that this behavior is slightly different from the forward behavior in that a
+            # change in label name will always affect from the currently viewed frame up until the
+            # current frame.
             if label_on and cur_segment is not None:
                 # Label from cur_frame+next_frame:cur_frame with cur_segment
-                labels['behavior'][cur_frame+next_frame:cur_frame] = cur_segment
+                # Don't do this, it will distribute the string elements across the labels
+                # labels['behavior'][cur_frame+next_frame:cur_frame] = cur_segment
+                for idx in range(cur_frame+next_frame, cur_frame+1):
+                    labels['behavior'][idx] = cur_segment
 
         elif 0 < next_frame:
             # Check if the frame needs to advance.
@@ -329,6 +331,8 @@ def main():
         else:
             # Otherise refresh the frame buffer with the last fetched frame
             np_frame = numpy.copy(past_frame_buffer[-1])
+            if label_on and cur_segment is not None:
+                labels['behavior'][cur_frame+next_frame] = cur_segment
 
 
         # Print some stuff for the UI:
@@ -336,17 +340,25 @@ def main():
         x = int(width * 0.1)
         color = (1.0, 1.0, 1.0)
         thickness = 3.0
+        # Cur frame message
         frame_str = "Frame: {}".format(cur_frame)
         if 0 > next_frame:
             frame_str = "{} {}".format(frame_str, next_frame)
         frame_str = "{} / {}".format(frame_str, total_frames)
         cv2.putText(img=np_frame, text=frame_str, org=(x, y),
             fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=6)
+        # Current label message
         y = int(height * 0.9)
-        frame_str = "Labelling {}, cur segment: {}".format(label_on,
+        label_str = "Labelling {}, cur segment: {}".format(label_on,
             labels['behavior'][cur_frame+next_frame])
-        cv2.putText(img=np_frame, text=frame_str, org=(x, y),
+        cv2.putText(img=np_frame, text=label_str, org=(x, y),
             fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=6)
+        # Mark message
+        if labels['mark'][cur_frame+next_frame] is not None:
+            y = int(height * 0.99)
+            mark_str = "Current mark: {}".format(labels['mark'][cur_frame+next_frame])
+            cv2.putText(img=np_frame, text=mark_str, org=(x, y),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=6)
 
         # Display the frame.
         cv2.imshow("arm video", np_frame)
@@ -358,7 +370,7 @@ def main():
         # arm_records has values for the position, velocity, and effort keys
         # Time is in the time field
         # Find the first record with a timestamp greater than the image time
-        print("record is {}".format(arm_records[cur_record]))
+        # print("record is {}".format(arm_records[cur_record]))
         while (0 <= cur_record and arm_records[cur_record]['timestamp'] > cur_time):
             cur_record -= 1
         while (cur_record < len(arm_records) and arm_records[cur_record]['timestamp'] < cur_time):
@@ -402,30 +414,30 @@ def main():
                 print("Labels saved to {}".format(args.label_file))
             elif isKey(inkey, ord('k')):
                 cur_segment = "keep"
+                print("Current label changed to {}".format(cur_segment))
                 action = True
             elif isKey(inkey, ord('d')):
                 cur_segment = "discard"
+                print("Current label changed to {}".format(cur_segment))
                 action = True
-            elif isKey(inkey, ord('b')):
-                # TODO Mark the beginning of an action
-                pass
-            elif isKey(inkey, ord('e')):
-                # TODO Mark the beginning of an action
-                pass
+            elif isKey(inkey, ord('m')):
+                # Mark an action
+                marknum = cv2.waitKey(0)
+                mark = marknum - ord('0')
+                if 0 <= mark and mark <= 9:
+                    labels['mark'][cur_frame+next_frame] = mark
+                    print("Mark {} written for frame {}".format(mark, cur_frame+next_frame))
+                    action = True
+                else:
+                    print("Mark must be a number, not {}".format(marknum))
             elif isKey(inkey, ord('h')):
                 print("s: Save labels")
                 print("q: Quit (without saving)")
                 print("l: Toggle labelling on or off")
                 print("k: Mark segment as keep")
                 print("d: Mark segment as drop")
-                print("b: Mark action begin (not yet implemented)")
-                print("e: Mark action end (not yet implemented)")
-
-            # TODO Use the returned key value for labelling.
-            # Save the per-frame segment labels into the file located at args.label_file
-            # TODO Add function to save
-            # TODO Add function to toggle labelling as "use" or "do not use"
-            # TODO Add function to mark the end of a maneuver
+                print("m[0-9]: Mark action")
+                # TODO Add an autoplay?
 
     # Remove the window
     cv2.destroyAllWindows()
