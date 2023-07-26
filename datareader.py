@@ -21,7 +21,7 @@ import yaml
 from nml_bag import Reader
 # For annotation drawing
 from PIL import ImageDraw, ImageFont, ImageOps
-from data_utility import (getVideoInfo, readArmRecords, readLabels, writeLabels) 
+from data_utility import (getVideoInfo, readArmRecords, readVideoTimestamps, readLabels, writeLabels) 
 
 
 def isKey(cvkey, key):

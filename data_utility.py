@@ -136,7 +136,7 @@ def readVideoTimestamps(csv_path):
         An array of timestamps at each frame, or None upon failure.
     """
     # TODO Technically this should be checked for failure.
-    time_csv_file = io.open(ts_path, "r", newline='')
+    time_csv_file = io.open(csv_path, "r", newline='')
     time_csv = csv.reader(time_csv_file, delimiter=",")
 
     # Verify that this is a timestamp file of the expected format
