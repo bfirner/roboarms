@@ -115,7 +115,16 @@ def main():
 
     # TODO Everything
 
-    
+    # Loop over each rosbag directory
+    # TODO Split this part into threads
+
+    # Get the arm data from the rosbag
+
+    # Get the labels
+
+    # Loop through the video frames, exporting as requested into the webdataset
+
+
     # Finished
     return
 

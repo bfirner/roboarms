@@ -1,6 +1,7 @@
 # Utilities for data handling, such as reading data from a rosbag, a video, or a yaml file with
 # labels.
 
+import csv
 import ffmpeg
 import io
 import math
@@ -124,3 +125,38 @@ def writeLabels(labels_path, labels):
     label_file = io.open(labels_path, "w", newline=None)
     label_file.write(yaml.dump(labels))
     label_file.close()
+
+
+def readVideoTimestamps(csv_path):
+    """Read video timestamps from a csv file.
+
+    Arguments:
+        csv_path (str): Path to the csv file.
+    Returns:
+        An array of timestamps at each frame, or None upon failure.
+    """
+    # TODO Technically this should be checked for failure.
+    time_csv_file = io.open(ts_path, "r", newline='')
+    time_csv = csv.reader(time_csv_file, delimiter=",")
+
+    # Verify that this is a timestamp file of the expected format
+    first_row = next(time_csv)
+    expected_row = ['frame_number', 'time_sec', 'time_ns']
+    if expected_row != first_row:
+        print("First timestamp csv row should be {}, but found {}".format(expected_row, first_row))
+        return None
+    # Read all of the rows into an array
+    video_timestamps = []
+    for row in time_csv:
+        frame_number, time_sec, time_ns = row
+        frame_number = int(frame_number)
+        time_sec = int(time_sec)
+        time_ns = int(time_ns)
+
+        # Keep a sanity check on the frame numbers
+        assert frame_number == len(video_timestamps)
+
+        # Combine the two time components into a big number
+        video_timestamps.append(time_sec * 10**9 + time_ns)
+    time_csv_file.close()
+    return video_timestamps
