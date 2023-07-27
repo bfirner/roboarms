@@ -140,6 +140,8 @@ def main():
     # Keep a limited buffer of past frames so that we can go backwards
     past_frame_buffer = []
 
+    # TODO The video could be loaded in chunks with .trim(start_frame=x, end_frame=y) rather than
+    # using the history buffer. That may be slow though, so it should be tested.
     while cur_frame < total_frames and not finished:
         # Check if we should look into the past frame buffer and if that past frame is present.
         if 0 > next_frame:

@@ -11,6 +11,33 @@ import yaml
 from nml_bag import Reader
 
 
+def vidSamplingCommonCrop(height, width, out_height, out_width, scale, x_offset, y_offset):
+    """
+    Return the common cropping parameters used in dataprep and annotations.
+
+    Arguments:
+        height     (int): Height of the video
+        width      (int): Width of the video
+        out_height (int): Height of the output patch
+        out_width  (int): Width of the output patch
+        scale    (float): Scale applied to the original video
+        x_offset   (int): x offset of the crop (after scaling)
+        y_offset   (int): y offset of the crop (after scaling)
+    Returns:
+        out_width, out_height, crop_x, crop_y
+    """
+    
+    if out_width is None:
+        out_width = math.floor(width * scale)
+    if out_height is None:
+        out_height = math.floor(height * scale)
+
+    crop_x = math.floor((width * scale - out_width)/2 + x_offset)
+    crop_y = math.floor((height * scale - out_height)/2 + y_offset)
+
+    return out_width, out_height, crop_x, crop_y
+
+
 def getVideoInfo(video_path):
     """
     Get the total frames and size of a video.
@@ -75,7 +102,6 @@ def readArmRecords(bag_path, arm_topic):
     # The entire ros2bag can be fetched with reader.records(), which preloads and caches the result.
     # This is the preferred method of labelling, so long as we can guarantee that enough memory will
     # always be available.
-    print("Loading rosbag records.")
     # Extract the desired records and store them by timestamp. The records look like
     # this:
     # {'topic': '/arm2/joint_states', 'time_ns': 1689788069723452912, 'type': 'sensor_msgs/msg/JointState', 'header': OrderedDict([('stamp', OrderedDict([('sec', 1689788069), ('nanosec', 723357753)])), ('frame_id', '')]), 'name': ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate', 'gripper', 'left_finger', 'right_finger'], 'position': [0.015339808538556099, -1.7180585861206055, 1.7226604223251343, -1.7548741102218628, -0.023009711876511574, -0.5875146389007568, 0.013221289031207561, -0.013221289031207561], 'velocity': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 'effort': [0.0, 0.0, 0.0, 5.380000114440918, -2.690000057220459, 0.0, 0.0, 0.0]}
@@ -93,7 +119,6 @@ def readArmRecords(bag_path, arm_topic):
                 'effort': record['effort'],
             }
             arm_records.append(data)
-    print("Done!")
     return arm_records
 
 
