@@ -10,16 +10,23 @@ import cv2
 import ffmpeg
 import io
 import math
+import modern_robotics
 import numpy
 import os
 import pathlib
+import random
 import sys
 import torch
 import webdataset as wds
 import yaml
 
+from data_utility import (getVideoInfo, readArmRecords, readLabels, readVideoTimestamps,
+    vidSamplingCommonCrop)
+# These are the robot descriptions to match function calls in the modern robotics package.
+from interbotix_xs_modules.xs_robot import mr_descriptions as mrd
 from nml_bag import Reader
-
+# Helper function to convert to images
+from torchvision import transforms
 
 def writeSample(dataset, frames, video_source, sample_frames, other_data):
     """Write the given sample to a webdataset.
@@ -38,44 +45,123 @@ def writeSample(dataset, frames, video_source, sample_frames, other_data):
     # Convert the images to pngs
     buffers = []
     for frame in frames:
-        img = transforms.ToPILImage()(frame/255.0).convert('RGB')
+        img = transforms.ToPILImage()(frame[0]/255.0).convert('RGB')
         # Now save the image as a png into a buffer in memory
         buf = io.BytesIO()
         img.save(fp=buf, format="png")
         buffers.append(buf)
     # TODO FIXME Need to fetch the robot state for this
+    base_name = '_'.join([video_source] + [str(fnum) for fnum in sample_frames])
     sample = {
-        "__key__": '_'.join((base_name, '_'.join(frame_num))),
-        "cls": row[class_col].encode('utf-8'),
-        "metadata.txt": metadata.encode('utf-8')
+        "__key__": base_name,
     }
     # Write the other data into the dataset
-    for key, value in other_data:
-        sample[key] = value.encode('utf-8')
+    for key, value in other_data.items():
+        sample[key] = str(value).encode('utf-8')
     for i in range(frame_count):
         sample[f"{i}.png"] = buffers[i].getbuffer()
-    datawriter.write(sample)
+    dataset.write(sample)
 
 
+def getGripperPosition(robot_model, arm_record):
+    """Get the x,y,z position of the gripper relative to the waist.
 
-def interpolateArmData(arm_records, timestamp):
-    """Interpolate arm data to match the given video timestamp.
+    This is basically the same as the get_ee_pose function for an interbotix arm, but takes in an
+    arbitrary set of joint states. Like that function, this just calls something from the
+    modern_robotics package.
+
+    The robot model should be fetched from
+         getattr(interbotix_xs_modules.xs_robot.mr_descriptions.ModernRoboticsDescription, 'px150')
 
     Arguments:
-        arm_records ({str: data}): Ros message data for the robot arm.
-        timestamp           (int): The ros timestamp (in ns)
+        arm_record ({str: data}): Ros message data for the robot arm.
     Returns:
-        A table (str: float) of the data at this timestamp.
+        x,y,z tuple of the gripper location.
     """
-    # Extract the position, velocity, and effort values for each of the joints.
-    # The data looks like this:
-    # data = {
-    #     'timestamp': time_sec * 10**9 + time_ns,
-    #     'name': record['name'],
-    #     'position': record['position'],
-    #     'velocity': record['velocity'],
-    #     'effort': record['effort'],
-    # }
+    # TODO Since a mini-goal of this project is to handle actuation without calibration we won't be
+    # using this for labels (because it would require calibration for the x,y,z location of the
+    # gripper to be meaningful), but will be using this to determine the moved distance of the
+    # gripper, and from that we will determine the next pose to predict.
+    joint_positions = [
+        arm_record['position']['name'] for name in arm_record['name']
+    ]
+    # 'M' is the home configuration of the robot, Slist has the joint screw axes at the home
+    # position
+    return modern_robotics.FKinSpace(robot_model.M, robot_model.Slist, joint_positions)
+    pass
+
+
+# Create a memoizing version of arm interpolation function. Since it is likely that calls will be
+# made in time order we should always begin searching records close the to index of the last search.
+class ArmDataInterpolator:
+    def __init__(self, arm_records):
+        """
+        Arguments:
+            arm_records ({str: data}): Ros message data for the robot arm.
+        """
+        self.last_idx = 0
+        self.records = arm_records
+
+    def interpolate(self, timestamp):
+        """Interpolate arm data to match the given video timestamp.
+
+        Arguments:
+            timestamp           (int): The ros timestamp (in ns)
+        Returns:
+            A table (str: float) of the data at this timestamp.
+        """
+        # Extract the position, velocity, and effort values for each of the joints.
+        # The data looks like this:
+        # data = {
+        #     'timestamp': time_sec * 10**9 + time_ns,
+        #     'name': record['name'],
+        #     'position': record['position'],
+        #     'velocity': record['velocity'],
+        #     'effort': record['effort'],
+        # }
+
+        # First find the index before this event
+        # Go forwards if necessary to find the first index after the event
+        while (self.last_idx < len(self.records) and
+            self.records[self.last_idx]['timestamp'] < timestamp):
+            self.last_idx += 1
+        if self.last_idx >= len(self.records):
+            raise Exception("Requested timestamp {} is beyond the data range.".format(timestamp))
+        # Go backwards if necessary to find the first index before this event
+        while 0 < self.last_idx and self.records[self.last_idx]['timestamp'] > timestamp:
+            self.last_idx -= 1
+        if self.last_idx < 0:
+            raise Exception("Requested timestamp {} comes before the data range.".format(timestamp))
+
+        # This index is the state before the given timestamp
+        before_state = self.records[self.last_idx]
+
+        # Go forward one index
+        self.last_idx += 1
+        if self.last_idx >= len(self.records):
+            raise Exception("Requested timestamp {} is beyond the data range.".format(timestamp))
+
+        # This index is the state after the given timestamp
+        after_state = self.records[self.last_idx]
+
+        # Interpolation details
+        before_time = before_state['timestamp']
+        after_time = after_state['timestamp']
+        delta = (timestamp - before_time) / (after_time - before_time)
+
+        # Assemble a new record
+        new_record = {
+            'timestamp': timestamp,
+            'name': before_state['name']
+        }
+
+        # Interpolate data from each of the robot records
+        for dataname in ['position', 'velocity', 'effort']:
+            new_record['position'] = [data[0] + (data[1]-data[0])*delta for data in
+                zip(before_state['position'], after_state['position'])]
+
+        # Return the assembled record
+        return new_record
 
 
 def main():
@@ -151,7 +237,7 @@ def main():
         help='Number of frames in each sample.')
     parser.add_argument(
         '--sample_prob',
-        type=int,
+        type=float,
         required=False,
         default=0.2,
         help='Probability of sampling any frame.')
@@ -168,6 +254,12 @@ def main():
         required=False,
         default=1,
         help='Number of thread workers')
+    parser.add_argument(
+        '--prediction_distance',
+        type=float,
+        required=False,
+        default=0.5,
+        help='Distance of the future position of the robot gripper in the dataset.')
 
     args = parser.parse_args()
 
@@ -179,6 +271,7 @@ def main():
     # Loop over each rosbag directory
     # TODO Split this part into threads
     for rosdir in args.bag_paths:
+        print("Processing {}".format(rosdir))
         # Check for required paths
         path = pathlib.Path(rosdir)
 
@@ -218,11 +311,11 @@ def main():
 
         # Open the rosbag db file and read the arm topic
         arm_topic = f"/{args.train_robot}/joint_states"
-        arm_records = readArmRecords(rosdir)
+        arm_data = ArmDataInterpolator(readArmRecords(rosdir, arm_topic))
 
         # Now go through video frames.
         width, height, total_frames = getVideoInfo(vid_path)
-        print("Found {} frames in the video {}.".format(total_frames, vid_path))
+        print("Found {} frames in the video {}".format(total_frames, vid_path))
 
         # Get the labels
         if args.label_file is None:
@@ -232,17 +325,23 @@ def main():
 
         # Loop through the video frames, exporting as requested into the webdataset
         out_width, out_height, out_crop_x, out_crop_y = vidSamplingCommonCrop(
-            height, width, args.height, args.width, args.scale, args.crop_x_offset, args.crop_y_offset)
+            height, width, args.height, args.width, args.video_scale, args.crop_x_offset, args.crop_y_offset)
+        print("{}, {}, {}, {}".format(out_width, out_height, out_crop_x, out_crop_y))
         pix_fmt='rgb24'
         channels = 3
+        filter_width = out_width + 2 * args.crop_noise
+        filter_height = out_height + 2 * args.crop_noise
+        # TODO FIXME debugging
+        filter_width = int(args.video_scale * width)
+        filter_height = int(args.video_scale * height)
         video_process = (
             ffmpeg
             .input(vid_path)
             # Scale
-            .filter('scale', args.scale*width, -1)
+            .filter('scale', args.video_scale*width, -1)
             # The crop is automatically centered if the x and y parameters are not used.
             # Don't crop to out_width and out_height so that we can have crop jitter
-            .filter('crop', out_w=width, out_h=height, x=out_crop_x, y=out_crop_y)
+            .filter('crop', out_w=filter_width, out_h=filter_height, x=out_crop_x, y=out_crop_y)
             # TODO Starting off without normalization
             # Normalize color channels.
             #.filter('normalize', independence=0.0)
@@ -259,10 +358,10 @@ def main():
             partial_sample = []
             sample_frames = []
             # Use the same crop location for each sample in multiframe sequences.
-            crop_x = random.choice(range(0, 2 * self.crop_noise + 1))
-            crop_y = random.choice(range(0, 2 * self.crop_noise + 1))
-            while in_bytes and len(partial_sample) < self.frames_per_sample:
-                in_bytes = video_process.stdout.read(width * height * channels)
+            rand_crop_x = random.choice(range(0, 2 * args.crop_noise + 1))
+            rand_crop_y = random.choice(range(0, 2 * args.crop_noise + 1))
+            while in_bytes and len(partial_sample) < args.frames_per_sample:
+                in_bytes = video_process.stdout.read(filter_width * filter_height * channels)
                 if in_bytes:
                     # Check if this frame will be sampled.
                     sample_frame = False
@@ -275,20 +374,19 @@ def main():
                     # If we are sampling a muiltiframe input then see if this frame is at the
                     # current interval
                     else:
-                        sample_frame = (frame - source_frame) % (self.interval + 1) == 0
-
+                        sample_frame = (frame - source_frame) % (args.interval + 1) == 0
 
                     if sample_frame:
                         # Convert to numpy, and then to torch.
                         np_frame = numpy.frombuffer(in_bytes, numpy.uint8)
                         in_frame = torch.tensor(data=np_frame, dtype=torch.uint8,
-                            ).reshape([1, in_height, in_width, channels])
+                            ).reshape([1, filter_height, filter_width, channels])
                         # Apply the random crop
-                        in_frame = in_frame[:, out_crop_y:out_crop_y+self.out_height,
-                                out_crop_x:out_crop_x+out_width, :]
+                        in_frame = in_frame[:, rand_crop_y:rand_crop_y+out_height,
+                                rand_crop_x:rand_crop_x+out_width, :]
                         in_frame = in_frame.permute(0, 3, 1, 2).to(dtype=torch.float)
                         partial_sample.append(in_frame)
-                        sample_frames.append(str(frame))
+                        sample_frames.append(frame)
                     frame += 1
                 else:
                     # Reached the end of the video
@@ -296,16 +394,17 @@ def main():
                 # If multiple frames are being returned then concat them along the channel
                 # dimension. Otherwise just return the single frame.
                 # First verify that we collect a full frame
-                if len(partial_sample) == self.frame_per_sample:
+                if len(partial_sample) == args.frames_per_sample:
                     # TODO Fetch the arm data for these frames
                     # TODO Also fetch history?
-                    # TODO Fetch the next state after some timestamp
+                    # TODO Fetch the next state after some movement distance to be the prediction target
                     # TODO That timestamp should be an option on the command line
-                    other_data = interpolateArmData(arm_records, video_timestamps[sample_frames[-1]])
-                    writeSample(datawriter, partial_sample, rosdir, sample_frames, other_data)
+                    other_data = arm_data.interpolate(video_timestamps[sample_frames[-1]])
+                    writeSample(datawriter, partial_sample, rosdir.replace('/', ''), sample_frames, other_data)
 
 
     # Finished
+    print("Data creation complete.")
     datawriter.close()
     return
 
