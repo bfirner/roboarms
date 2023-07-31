@@ -71,10 +71,11 @@ def getGripperPosition(robot_model, arm_record):
     modern_robotics package.
 
     The robot model should be fetched from
-         getattr(interbotix_xs_modules.xs_robot.mr_descriptions.ModernRoboticsDescription, 'px150')
+         getattr(interbotix_xs_modules.xs_robot.mr_descriptions, 'px150')
 
     Arguments:
-        arm_record ({str: data}): Ros message data for the robot arm.
+        robot_model      (class): String that identifies this robot arm in the interbotix modules.
+        arm_record ({str: data}): ROS message data for the robot arm.
     Returns:
         x,y,z tuple of the gripper location.
     """
@@ -82,13 +83,52 @@ def getGripperPosition(robot_model, arm_record):
     # using this for labels (because it would require calibration for the x,y,z location of the
     # gripper to be meaningful), but will be using this to determine the moved distance of the
     # gripper, and from that we will determine the next pose to predict.
+    # The arm joints are separate from the gripper, which is represented by three "joints" even
+    # though it is a single motor.
+    gripper_names = ["gripper", "left_finger", "right_finger"]
+    names = [name for name in arm_record['name'] if name not in gripper_names]
     joint_positions = [
-        arm_record['position']['name'] for name in arm_record['name']
+        arm_record['position'][names.index(name)] for name in names
     ]
     # 'M' is the home configuration of the robot, Slist has the joint screw axes at the home
     # position
-    return modern_robotics.FKinSpace(robot_model.M, robot_model.Slist, joint_positions)
-    pass
+    T = modern_robotics.FKinSpace(robot_model.M, robot_model.Slist, joint_positions)
+    # Return the x,y,z components of the translation matrix.
+    return (T[0][-1], T[1][-1], T[2][-2])
+
+
+def getStateAtNextPosition(reference_record, arm_records, movement_distance, robot_model):
+    """Get the arm state after the end affector moves the given distance
+
+    Arguments:
+        reference_record  ({str: data}): Reference position
+        arm_records (list[{str: data}]): ROS data for the robot arm. Search begins at index 0.
+        movement_distance (float): Distance in meters desired from the reference position.
+        robot_model      (class): String that identifies this robot arm in the interbotix modules.
+    Returns:
+        tuple({str: data}, int): The arm record at the desired distance, or None if the records end
+                                 before reaching the desired distance. Also returns the index of
+                                 this record.
+    """
+    # Loop until we run out of records or hit the desired movement distance.
+    reference_position = getGripperPosition(robot_model, reference_record)
+    distance = 0
+    idx = 0
+    next_record = None
+    # Search for the first record with the desired distance
+    while idx < len(arm_records) and distance < movement_distance:
+        next_record = arm_records[idx]
+        next_position = getGripperPosition(robot_model, next_record)
+        # Find the Euclidean distance from the reference position to the current position
+        distance = math.sqrt(sum([(a-b)**2 for a, b in zip(reference_position, next_position)]))
+        idx += 1
+
+    # If we ended up past the end of the records then they don't have anything at the desired
+    # distance
+    if idx >= len(arm_records):
+        return None
+
+    return next_record, idx-1
 
 
 # Create a memoizing version of arm interpolation function. Since it is likely that calls will be
@@ -97,10 +137,22 @@ class ArmDataInterpolator:
     def __init__(self, arm_records):
         """
         Arguments:
-            arm_records ({str: data}): Ros message data for the robot arm.
+            arm_records (list[{str: data}]): ROS message data for the robot arm.
         """
         self.last_idx = 0
         self.records = arm_records
+
+    def next_record(self):
+        """Return the last used record."""
+        return self.records[self.last_idx]
+
+    def future_records(self):
+        """Return a slice from the last used index to the end of the records."""
+        return self.records[self.last_idx:]
+
+    def slice_ahead(self, offset):
+        """Return a slice from the current index up to and including the given offset."""
+        return self.records[self.last_idx:offset+1]
 
     def interpolate(self, timestamp):
         """Interpolate arm data to match the given video timestamp.
@@ -108,7 +160,7 @@ class ArmDataInterpolator:
         Arguments:
             timestamp           (int): The ros timestamp (in ns)
         Returns:
-            A table (str: float) of the data at this timestamp.
+            {str: float}: A table of the interpolated data at this timestamp.
         """
         # Extract the position, velocity, and effort values for each of the joints.
         # The data looks like this:
@@ -258,8 +310,14 @@ def main():
         '--prediction_distance',
         type=float,
         required=False,
-        default=0.5,
-        help='Distance of the future position of the robot gripper in the dataset.')
+        default=0.01,
+        help='Distance (in meters) of the future position of the robot gripper in the dataset.')
+    parser.add_argument(
+        '--robot_model',
+        type=str,
+        required=False,
+        default="px150",
+        help='The name of the interbotix robot model.')
 
     args = parser.parse_args()
 
@@ -267,6 +325,9 @@ def main():
 
     # Create a writer for the WebDataset
     datawriter = wds.TarWriter(args.outpath, encoder=False)
+
+    model_generator = getattr(mrd, args.robot_model)
+    robot_model = model_generator()
 
     # Loop over each rosbag directory
     # TODO Split this part into threads
@@ -323,6 +384,9 @@ def main():
         label_path = os.path.join(rosdir, args.label_file)
         labels = readLabels(label_path)
 
+        # Figure out which of the arm records occur at a mark in the labels
+        # TODO FIXME
+
         # Loop through the video frames, exporting as requested into the webdataset
         num_samples = int(args.sample_prob * (total_frames // args.frames_per_sample))
         sampler = VideoSampler(vid_path, num_samples, args.frames_per_sample, args.interval,
@@ -339,9 +403,23 @@ def main():
             # TODO Also fetch history? Option on the command line?
             # TODO Fetch the next state after some end effector movement distance to be the
             # prediction target
-            # TODO The movement distance to predict should be an option on the command line
-            # TODO Add in some metadata, like the video path and the frame numbers
-            writeSample(datawriter, sample_frames, rosdir.replace('/', ''), frame_nums, other_data)
+            next_state, offset = getStateAtNextPosition(other_data, arm_data.future_records(),
+                    args.prediction_distance, robot_model)
+
+            if next_state is not None:
+                # If getting to the next state goes through an end of action marker then have the
+                # next position stop there instead of next_state
+                action_slice = arm_data.slice_ahead(offset)
+                # TODO FIXME No, don't write a findMarkRecord here, compute the indices of records
+                # with marks ahead of time. That is more efficient and also cleaner.
+                #mark_record = findMarkRecord(action_slice, labels)
+                mark_record = None
+                if mark_record is not None:
+                    next_state = mark_record
+                # TODO FIXME Need to check the labels and skip anything that is marked to be skipped
+
+                # TODO Add in some metadata, like the video path and the frame numbers
+                writeSample(datawriter, sample_frames, rosdir.replace('/', ''), frame_nums, other_data)
 
 
     # Finished
