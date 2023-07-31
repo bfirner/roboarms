@@ -20,22 +20,22 @@ import torch
 import webdataset as wds
 import yaml
 
-from data_utility import (getVideoInfo, readArmRecords, readLabels, readVideoTimestamps,
-    vidSamplingCommonCrop)
+from data_utility import (getVideoInfo, readArmRecords, readLabels, readVideoTimestamps)
+from bee_analysis.utility.video_utility import VideoSampler
 # These are the robot descriptions to match function calls in the modern robotics package.
 from interbotix_xs_modules.xs_robot import mr_descriptions as mrd
 from nml_bag import Reader
 # Helper function to convert to images
 from torchvision import transforms
 
-def writeSample(dataset, frames, video_source, sample_frames, other_data):
+def writeSample(dataset, frames, video_source, frame_nums, other_data):
     """Write the given sample to a webdataset.
 
     Arguments:
         dataset       (TarWriter): Dataset to write into.
         frames     (list[tensor]): The frames.
         video_source        (str): The source of this data.
-        sample_frames (list[int]): The frame numbers.
+        frame_nums    (list[int]): The frame numbers.
         other_data ({str: float}): Other training data.
     Returns:
         None
@@ -51,7 +51,7 @@ def writeSample(dataset, frames, video_source, sample_frames, other_data):
         img.save(fp=buf, format="png")
         buffers.append(buf)
     # TODO FIXME Need to fetch the robot state for this
-    base_name = '_'.join([video_source] + [str(fnum) for fnum in sample_frames])
+    base_name = '_'.join([video_source] + [str(fnum) for fnum in frame_nums])
     sample = {
         "__key__": base_name,
     }
@@ -324,83 +324,24 @@ def main():
         labels = readLabels(label_path)
 
         # Loop through the video frames, exporting as requested into the webdataset
-        out_width, out_height, out_crop_x, out_crop_y = vidSamplingCommonCrop(
-            height, width, args.height, args.width, args.video_scale, args.crop_x_offset, args.crop_y_offset)
-        print("{}, {}, {}, {}".format(out_width, out_height, out_crop_x, out_crop_y))
-        pix_fmt='rgb24'
-        channels = 3
-        filter_width = out_width + 2 * args.crop_noise
-        filter_height = out_height + 2 * args.crop_noise
-        # TODO FIXME debugging
-        filter_width = int(args.video_scale * width)
-        filter_height = int(args.video_scale * height)
-        video_process = (
-            ffmpeg
-            .input(vid_path)
-            # Scale
-            .filter('scale', args.video_scale*width, -1)
-            # The crop is automatically centered if the x and y parameters are not used.
-            # Don't crop to out_width and out_height so that we can have crop jitter
-            .filter('crop', out_w=filter_width, out_h=filter_height, x=out_crop_x, y=out_crop_y)
-            # TODO Starting off without normalization
-            # Normalize color channels.
-            #.filter('normalize', independence=0.0)
-            .output('pipe:', format='rawvideo', pix_fmt=pix_fmt)
-            .run_async(pipe_stdout=True, quiet=True)
-        )
-        # Generate frames and put them into the dataset
-        # Keep track of the frame number so we know which frames to sample
-        frame = 0
-        # Read in frames from this video.
-        in_bytes = True
-        while in_bytes:
-            # Get ready to fetch the next frame
-            partial_sample = []
-            sample_frames = []
-            # Use the same crop location for each sample in multiframe sequences.
-            rand_crop_x = random.choice(range(0, 2 * args.crop_noise + 1))
-            rand_crop_y = random.choice(range(0, 2 * args.crop_noise + 1))
-            while in_bytes and len(partial_sample) < args.frames_per_sample:
-                in_bytes = video_process.stdout.read(filter_width * filter_height * channels)
-                if in_bytes:
-                    # Check if this frame will be sampled.
-                    sample_frame = False
-                    sample_in_progress = 0 < len(partial_sample)
-                    # If not already sampling a frame, then use the sample probability to see if
-                    # this frame should be sampled.
-                    if not sample_in_progress:
-                        sample_frame = (random.random() < args.sample_prob)
-                        source_frame = frame
-                    # If we are sampling a muiltiframe input then see if this frame is at the
-                    # current interval
-                    else:
-                        sample_frame = (frame - source_frame) % (args.interval + 1) == 0
+        num_samples = int(args.sample_prob * (total_frames // args.frames_per_sample))
+        sampler = VideoSampler(vid_path, num_samples, args.frames_per_sample, args.interval,
+            out_width=args.width, out_height=args.height, crop_noise=args.crop_noise,
+            scale=args.video_scale, crop_x_offset=args.crop_x_offset,
+            crop_y_offset=args.crop_y_offset, channels=3, normalize=False)
 
-                    if sample_frame:
-                        # Convert to numpy, and then to torch.
-                        np_frame = numpy.frombuffer(in_bytes, numpy.uint8)
-                        in_frame = torch.tensor(data=np_frame, dtype=torch.uint8,
-                            ).reshape([1, filter_height, filter_width, channels])
-                        # Apply the random crop
-                        in_frame = in_frame[:, rand_crop_y:rand_crop_y+out_height,
-                                rand_crop_x:rand_crop_x+out_width, :]
-                        in_frame = in_frame.permute(0, 3, 1, 2).to(dtype=torch.float)
-                        partial_sample.append(in_frame)
-                        sample_frames.append(frame)
-                    frame += 1
-                else:
-                    # Reached the end of the video
-                    video_process.wait()
-                # If multiple frames are being returned then concat them along the channel
-                # dimension. Otherwise just return the single frame.
-                # First verify that we collect a full frame
-                if len(partial_sample) == args.frames_per_sample:
-                    # TODO Fetch the arm data for these frames
-                    # TODO Also fetch history?
-                    # TODO Fetch the next state after some movement distance to be the prediction target
-                    # TODO That timestamp should be an option on the command line
-                    other_data = arm_data.interpolate(video_timestamps[sample_frames[-1]])
-                    writeSample(datawriter, partial_sample, rosdir.replace('/', ''), sample_frames, other_data)
+        for frame_data in sampler:
+            sample_frames, video_path, frame_nums = frame_data
+
+            # Fetch the arm data for the latest of the frames (or the only frame if there is only a
+            # single frame per sample)
+            other_data = arm_data.interpolate(video_timestamps[int(frame_nums[-1])])
+            # TODO Also fetch history? Option on the command line?
+            # TODO Fetch the next state after some end effector movement distance to be the
+            # prediction target
+            # TODO The movement distance to predict should be an option on the command line
+            # TODO Add in some metadata, like the video path and the frame numbers
+            writeSample(datawriter, sample_frames, rosdir.replace('/', ''), frame_nums, other_data)
 
 
     # Finished

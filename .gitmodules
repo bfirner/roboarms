@@ -1,0 +1,3 @@
+[submodule "bee_analysis"]
+	path = bee_analysis
+	url = git@github.com:bfirner/bee_analysis.git
