@@ -28,15 +28,15 @@ from nml_bag import Reader
 # Helper function to convert to images
 from torchvision import transforms
 
-def writeSample(dataset, frames, video_source, frame_nums, other_data):
+def writeSample(dataset, sample_labels, frames, video_source, frame_nums):
     """Write the given sample to a webdataset.
 
     Arguments:
-        dataset       (TarWriter): Dataset to write into.
-        frames     (list[tensor]): The frames.
-        video_source        (str): The source of this data.
-        frame_nums    (list[int]): The frame numbers.
-        other_data ({str: float}): Other training data.
+        dataset          (TarWriter): Dataset to write into.
+        sample_labels ({str: float}): Target labels
+        frames        (list[tensor]): The frames.
+        video_source           (str): The source of this data.
+        frame_nums       (list[int]): The frame numbers.
     Returns:
         None
     """
@@ -55,8 +55,8 @@ def writeSample(dataset, frames, video_source, frame_nums, other_data):
     sample = {
         "__key__": base_name,
     }
-    # Write the other data into the dataset
-    for key, value in other_data.items():
+    # Write the labels into the dataset
+    for key, value in sample_labels.items():
         sample[key] = str(value).encode('utf-8')
     for i in range(frame_count):
         sample[f"{i}.png"] = buffers[i].getbuffer()
@@ -397,29 +397,50 @@ def main():
         for frame_data in sampler:
             sample_frames, video_path, frame_nums = frame_data
 
-            # Fetch the arm data for the latest of the frames (or the only frame if there is only a
-            # single frame per sample)
-            other_data = arm_data.interpolate(video_timestamps[int(frame_nums[-1])])
+            # Fetch the arm data for the latest of the frames (or the only frame if there is
+            # only a single frame per sample)
+            first_frame = int(frame_nums[0])
+            last_frame = int(frame_nums[-1])
+            current_data = arm_data.interpolate(video_timestamps[last_frame])
             # TODO Also fetch history? Option on the command line?
-            # TODO Fetch the next state after some end effector movement distance to be the
-            # prediction target
-            next_state, offset = getStateAtNextPosition(other_data, arm_data.future_records(),
+            # Fetch the next state after some end effector movement distance to be the prediction
+            # target
+            next_state, offset = getStateAtNextPosition(current_data, arm_data.future_records(),
                     args.prediction_distance, robot_model)
 
             if next_state is not None:
-                # If getting to the next state goes through an end of action marker then have the
-                # next position stop there instead of next_state
-                action_slice = arm_data.slice_ahead(offset)
-                # TODO FIXME No, don't write a findMarkRecord here, compute the indices of records
-                # with marks ahead of time. That is more efficient and also cleaner.
-                #mark_record = findMarkRecord(action_slice, labels)
-                mark_record = None
-                if mark_record is not None:
-                    next_state = mark_record
-                # TODO FIXME Need to check the labels and skip anything that is marked to be skipped
+                # Find the frame number that corresponds to that next_state
+                # If this sequence attempts to go through a 'mark' label, stop the next state at that
+                # position instead of the one at the requested movement distance. This allows for a
+                # clear separation between actions, ensuring that the robot will fully complete an
+                # action by moving all the way into the desired position before moving on to the next
+                # action.
+                while (last_frame < len(video_timestamps) and
+                        labels['mark'][last_frame] is not None and
+                        video_timestamps[last_frame] < next_state['timestamp']):
+                    last_frame += 1
 
-                # TODO Add in some metadata, like the video path and the frame numbers
-                writeSample(datawriter, sample_frames, rosdir.replace('/', ''), frame_nums, other_data)
+                # If we exited because of the mark then we need to set a new next state
+                if labels['mark'][last_frame] is not None:
+                    next_state = arm_data.interpolate(video_timestamps[last_frame])
+
+                # Verify that this data should be used
+                # Check from the past frames to the frame at the target position in the future
+                frame_range = list(range(first_frame, last_frame+1))
+                any_discards = any([labels['behavior'][frame_num] == "discard" for frame_num in frame_range])
+
+                if not any_discards:
+                    # Combine the target labels and the current state into a single table for this
+                    # sample.
+                    sample_labels = {}
+                    for key, value in next_state.items():
+                        sample_labels["target_{}".format(key)] = value
+                    for key, value in current_data.items():
+                        sample_labels["current_{}".format(key)] = value
+
+                    # Now write the sample labels and frames.
+                    writeSample(datawriter, sample_labels, sample_frames, rosdir.replace('/', ''),
+                        frame_nums)
 
 
     # Finished
