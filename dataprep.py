@@ -9,6 +9,7 @@ import csv
 import cv2
 import ffmpeg
 import io
+import itertools
 import math
 import modern_robotics
 import numpy
@@ -384,8 +385,17 @@ def main():
         label_path = os.path.join(rosdir, args.label_file)
         labels = readLabels(label_path)
 
-        # Figure out which of the arm records occur at a mark in the labels
-        # TODO FIXME
+        # Record the mark times and names to make things easier when producing labels
+        marks = []
+        last_mark = None
+        for idx, mark in enumerate(labels['mark']):
+            # Fill in the last mark if there is no marker at this frame
+            # TODO Also fill in some progress measurement, in terms of total motion towards the goal
+            if mark is None:
+                marks.append(last_mark)
+            else:
+                last_mark = mark
+                marks.append(mark)
 
         # Loop through the video frames, exporting as requested into the webdataset
         num_samples = int(args.sample_prob * (total_frames // args.frames_per_sample))
@@ -437,6 +447,15 @@ def main():
                         sample_labels["target_{}".format(key)] = value
                     for key, value in current_data.items():
                         sample_labels["current_{}".format(key)] = value
+                    # This is the mark of the initial state for this maneuver
+                    sample_labels["initial_mark"] = marks[int(frame_nums[-1])]
+                    # Find the mark that we are progressing towards. Use 'none' if the current mark
+                    # remains in effect through the end of the data.
+                    next_marks = list(itertools.groupby(marks[(int(frame_nums[-1])):]))
+                    if len(next_marks) < 2:
+                        sample_labels["goal_mark"] = "none"
+                    else:
+                        sample_labels["goal_mark"] = next_marks[1][0]
 
                     # Now write the sample labels and frames.
                     writeSample(datawriter, sample_labels, sample_frames, rosdir.replace('/', ''),
