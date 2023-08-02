@@ -185,3 +185,88 @@ def readVideoTimestamps(csv_path):
         video_timestamps.append(time_sec * 10**9 + time_ns)
     time_csv_file.close()
     return video_timestamps
+
+
+# Create a memoizing version of arm interpolation function. Since it is likely that calls will be
+# made in time order we should always begin searching records close the to index of the last search.
+class ArmDataInterpolator:
+    def __init__(self, arm_records):
+        """
+        Arguments:
+            arm_records (list[{str: data}]): ROS message data for the robot arm.
+        """
+        self.last_idx = 0
+        self.records = arm_records
+
+    def next_record(self):
+        """Return the last used record."""
+        return self.records[self.last_idx]
+
+    def future_records(self):
+        """Return a slice from the last used index to the end of the records."""
+        return self.records[self.last_idx:]
+
+    def slice_ahead(self, offset):
+        """Return a slice from the current index up to and including the given offset."""
+        return self.records[self.last_idx:offset+1]
+
+    def interpolate(self, timestamp):
+        """Interpolate arm data to match the given video timestamp.
+
+        Arguments:
+            timestamp           (int): The ros timestamp (in ns)
+        Returns:
+            {str: float}: A table of the interpolated data at this timestamp.
+        """
+        # Extract the position, velocity, and effort values for each of the joints.
+        # The data looks like this:
+        # data = {
+        #     'timestamp': time_sec * 10**9 + time_ns,
+        #     'name': record['name'],
+        #     'position': record['position'],
+        #     'velocity': record['velocity'],
+        #     'effort': record['effort'],
+        # }
+
+        # First find the index before this event
+        # Go forwards if necessary to find the first index after the event
+        while (self.last_idx < len(self.records) and
+            self.records[self.last_idx]['timestamp'] < timestamp):
+            self.last_idx += 1
+        if self.last_idx >= len(self.records):
+            raise Exception("Requested timestamp {} is beyond the data range.".format(timestamp))
+        # Go backwards if necessary to find the first index before this event
+        while 0 < self.last_idx and self.records[self.last_idx]['timestamp'] > timestamp:
+            self.last_idx -= 1
+        if self.last_idx < 0:
+            raise Exception("Requested timestamp {} comes before the data range.".format(timestamp))
+
+        # This index is the state before the given timestamp
+        before_state = self.records[self.last_idx]
+
+        # Go forward one index
+        self.last_idx += 1
+        if self.last_idx >= len(self.records):
+            raise Exception("Requested timestamp {} is beyond the data range.".format(timestamp))
+
+        # This index is the state after the given timestamp
+        after_state = self.records[self.last_idx]
+
+        # Interpolation details
+        before_time = before_state['timestamp']
+        after_time = after_state['timestamp']
+        delta = (timestamp - before_time) / (after_time - before_time)
+
+        # Assemble a new record
+        new_record = {
+            'timestamp': timestamp,
+            'name': before_state['name']
+        }
+
+        # Interpolate data from each of the robot records
+        for dataname in ['position', 'velocity', 'effort']:
+            new_record['position'] = [data[0] + (data[1]-data[0])*delta for data in
+                zip(before_state['position'], after_state['position'])]
+
+        # Return the assembled record
+        return new_record

@@ -21,7 +21,8 @@ import yaml
 from nml_bag import Reader
 # For annotation drawing
 from PIL import ImageDraw, ImageFont, ImageOps
-from data_utility import (getVideoInfo, readArmRecords, readVideoTimestamps, readLabels, writeLabels) 
+from data_utility import (readArmRecords, readVideoTimestamps, readLabels, writeLabels)
+from bee_analysis.utility.video_utility import getVideoInfo
 
 
 def isKey(cvkey, key):
