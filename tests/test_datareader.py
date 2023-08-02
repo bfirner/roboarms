@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Test the datareader
+# Test the data_utility
 # Recording was probably done with something like this:
 # > ros2 bag record /arm1/joint_states /arm2/joint_states /image_raw/compressed /arm1/robot_description /arm2/robot_description /camera_info
 
@@ -9,7 +9,7 @@
 import io
 import pytest
 
-import datareader
+import data_utility
 
 example_config = {
     'port': '/dev/ttyUSB0',
@@ -58,7 +58,7 @@ def test_readLabels(tmp_path):
     # Write out a test yaml to read in.
     testfile.write(example_config_str)
     testfile.close()
-    config_values = datareader.readLabels(path)
+    config_values = data_utility.readLabels(path)
     assert example_config == config_values
 
 
@@ -66,6 +66,6 @@ def test_writeLabels(tmp_path):
     # Write out an example table and then read it back
     path = tmp_path / "config.yaml"
 
-    datareader.writeLabels(path, example_config)
-    config_values = datareader.readLabels(path)
+    data_utility.writeLabels(path, example_config)
+    config_values = data_utility.readLabels(path)
     assert example_config == config_values
