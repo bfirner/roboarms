@@ -114,9 +114,9 @@ def readArmRecords(bag_path, arm_topic):
             data = {
                 'timestamp': time_sec * 10**9 + time_ns,
                 'name': record['name'],
-                'position': record['position'],
-                'velocity': record['velocity'],
-                'effort': record['effort'],
+                'position': [float(value) for value in record['position']],
+                'velocity': [float(value) for value in record['velocity']],
+                'effort': [float(value) for value in record['effort']],
             }
             arm_records.append(data)
     return arm_records
