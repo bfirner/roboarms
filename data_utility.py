@@ -91,12 +91,12 @@ def readArmRecords(bag_path, arm_topic):
     reader = Reader(filepath=bag_path, topics=[arm_topic])
 
     # Print the topics.
-    print(f'The bag contains the following topics:')
-    print(reader.topics)
+    #print(f'The bag contains the following topics:')
+    #print(reader.topics)
     
     # Print the mapping between topics and message types.
-    print(f'The message types associated with each topic are as follows:')
-    print(reader.type_map)
+    #print(f'The message types associated with each topic are as follows:')
+    #print(reader.type_map)
 
 
     # The entire ros2bag can be fetched with reader.records(), which preloads and caches the result.
@@ -234,12 +234,12 @@ class ArmDataInterpolator:
             self.records[self.last_idx]['timestamp'] < timestamp):
             self.last_idx += 1
         if self.last_idx >= len(self.records):
-            raise Exception("Requested timestamp {} is beyond the data range.".format(timestamp))
+            raise IndexError("Requested timestamp {} is beyond the data range.".format(timestamp))
         # Go backwards if necessary to find the first index before this event
         while 0 < self.last_idx and self.records[self.last_idx]['timestamp'] > timestamp:
             self.last_idx -= 1
         if self.last_idx < 0:
-            raise Exception("Requested timestamp {} comes before the data range.".format(timestamp))
+            raise IndexError("Requested timestamp {} comes before the data range.".format(timestamp))
 
         # This index is the state before the given timestamp
         before_state = self.records[self.last_idx]
@@ -247,7 +247,7 @@ class ArmDataInterpolator:
         # Go forward one index
         self.last_idx += 1
         if self.last_idx >= len(self.records):
-            raise Exception("Requested timestamp {} is beyond the data range.".format(timestamp))
+            raise IndexError("Requested timestamp {} is beyond the data range.".format(timestamp))
 
         # This index is the state after the given timestamp
         after_state = self.records[self.last_idx]

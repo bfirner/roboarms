@@ -53,6 +53,7 @@ class ArmReplay(InterbotixManipulatorXS):
             if joint_name in self.arm.group_info.joint_names:
                 joint_idx = self.arm.group_info.joint_names.index(joint_name)
                 self.corrections[joint_idx] = corrections[joint_name]
+        print("Joint position corrections from calibration are {}".format(self.corrections))
 
         self.rate = self.core.create_rate(self.current_loop_rate)
 
@@ -76,6 +77,7 @@ class ArmReplay(InterbotixManipulatorXS):
                     position, delay = self.position_commands.get()
                     # Finish if a 'None' is provided for the position
                     if position is None:
+                        print("No more positions. Shutting down.")
                         self.shutdown()
                         return
                     self.goto(position, delay)
@@ -137,21 +139,27 @@ def get_calibration_diff(manip_yaml, puppet_yaml) -> dict:
     return corrections
 
 
-def position_handling_thread(arm_records, position_queue, update_delay_s):
+def position_handling_thread(robot_joint_names, arm_records, position_queue, update_delay_s):
     """Puts positions into the position queue.
 
     Arguments:
+        robot_joint_names (list[str]): Joint names in the robot arm.
         arm_records (ros records):
         position_queue    (Queue): Input queue to the robot
         update_delay_s    (float): Update delay in seconds
     """
     print("Record reading thread started.")
+    print("Joint names being controlled are {}".format(robot_joint_names))
+
+    # We will need to map from the message joints onto the robot joints. They should match if the
+    # robots are the same, but this could catch some errors later.
+    message_joint_names = arm_records[0]['name']
 
     # Go through the commands at the expected rate.
     cur_time = arm_records[0]['timestamp']
     cur_position = arm_records[0]['position']
     # Go to the first position in three quarters of a seconds, just in case it is far away
-    position_queue.put((cur_position, 0.75))
+    position_queue.put(([cur_position[message_joint_names.index(name)] for name in robot_joint_names], 0.75))
 
     # Wait for the robot to finish that movement before cramming the queue full with the faster
     # update rate of later commands.
@@ -167,12 +175,15 @@ def position_handling_thread(arm_records, position_queue, update_delay_s):
     try:
         while arm_interpolate.last_idx < len(arm_records):
             cur_time = cur_time + update_delay_nanos
-            next_record = arm_interpolate(cur_time)
-            position_queue.put((next_record['position'], update_delay_s))
+            next_record = arm_interpolate.interpolate(cur_time)
+            position_queue.put(([next_record['position'][message_joint_names.index(name)] for name in robot_joint_names], 0.75))
             time.sleep(update_delay_s)
-    except Exception:
-        # We ran out of records. It's safe to exit.
-        pass
+    except IndexError:
+        # We probably ran out of records. Time to exit.
+        print("End of records in the position handling thread.")
+
+    # Tell the arm that we are doin with actuation.
+    position_queue.put((None, None))
 
 
 def main():
@@ -221,13 +232,14 @@ def main():
 
     # Start the record reading thread before calling the blocking start_robot() call.
     reader = Thread(target=position_handling_thread,
-        args=(arm_records, bot.position_commands, (1. / args.cps))).start()
+        args=(bot.arm.group_info.joint_names, arm_records, bot.position_commands, (1. / args.cps))).start()
 
-    bot.start_robot()
+    # This will block until the replay is complete.
     if reader:
-        reader.join()
+        bot.start_robot()
 
     # TODO FIXME: Go to a home position?
+    print("Finished replaying.")
 
 
 if __name__ == '__main__':
