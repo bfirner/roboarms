@@ -77,11 +77,13 @@ class ArmReplay(InterbotixManipulatorXS):
                     position, delay = self.position_commands.get()
                     # Finish if a 'None' is provided for the position
                     if position is None:
-                        print("No more positions. Shutting down.")
+                        print("No more positions. Robot shutting down.")
                         self.shutdown()
                         return
                     self.goto(position, delay)
+            print("rclpy status is not okay. Robot shutting down.")
         except KeyboardInterrupt:
+            print("Interrupt received. Robot shutting down.")
             self.shutdown()
 
     def cur_grip(self) -> float:
@@ -150,6 +152,7 @@ def position_handling_thread(robot_joint_names, arm_records, position_queue, upd
     """
     print("Record reading thread started.")
     print("Joint names being controlled are {}".format(robot_joint_names))
+    print("Replaying from {} joint messages.".format(len(arm_records)))
 
     # We will need to map from the message joints onto the robot joints. They should match if the
     # robots are the same, but this could catch some errors later.
@@ -184,6 +187,7 @@ def position_handling_thread(robot_joint_names, arm_records, position_queue, upd
 
     # Tell the arm that we are doin with actuation.
     position_queue.put((None, None))
+    print("Message replaying thread ending.")
 
 
 def main():
@@ -235,8 +239,7 @@ def main():
         args=(bot.arm.group_info.joint_names, arm_records, bot.position_commands, (1. / args.cps))).start()
 
     # This will block until the replay is complete.
-    if reader:
-        bot.start_robot()
+    bot.start_robot()
 
     # TODO FIXME: Go to a home position?
     print("Finished replaying.")
