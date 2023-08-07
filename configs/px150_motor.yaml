@@ -10,7 +10,7 @@ port: /dev/ttyDXL
 # TODO Increase PID gain: Position_P_Gain register (no more than a few hundred points above default)
 # The P is from PID. There are also gains for I and D.
 # Set Position_P_Gain to 1000, 1500, 2000
-# Posibly inside of /root/interbotix_ws/install/interbotix_xsarm_control/share/interbotix_xsarm_control/config/px150.yaml
+# Possibly inside of /root/interbotix_ws/install/interbotix_xsarm_control/share/interbotix_xsarm_control/config/px150.yaml
 # Should be able to check register values with a command like this:
 # ros2 service call /arm1/get_motor_registers interbotix_xs_msgs/srv/RegisterValues "{cmd_type: 'group', name: 'arm', reg: 'Position_P_Gain'}"
 # Check the robot state like this:
@@ -29,6 +29,9 @@ port: /dev/ttyDXL
 #
 # response:
 # interbotix_xs_msgs.srv.RegisterValues_Response(values=[640, 640, 640, 640, 640])
+#
+# Setting a new gain value (for all registers) looks like this:
+# ros2 service call /arm2/set_motor_registers interbotix_xs_msgs/srv/RegisterValues "{cmd_type: 'group', name: 'arm', reg: 'Position_P_Gain', value: 800}"
 
 joint_order: [waist, shoulder, elbow, wrist_angle, wrist_rotate, gripper]
 sleep_positions: [0, -1.80, 1.55, 0.8, 0, 0]
