@@ -98,6 +98,11 @@ def getGripperPosition(robot_model, arm_record):
     return (T[0][-1], T[1][-1], T[2][-2])
 
 
+def getDistance(record_a, record_b):
+    """Return the Euclidean distance of the manipulator in record a and record b"""
+    return math.sqrt(sum([(a-b)**2 for a, b in zip(record_a, record_b)]))
+
+
 def getStateAtNextPosition(reference_record, arm_records, movement_distance, robot_model):
     """Get the arm state after the end affector moves the given distance
 
@@ -121,13 +126,13 @@ def getStateAtNextPosition(reference_record, arm_records, movement_distance, rob
         next_record = arm_records[idx]
         next_position = getGripperPosition(robot_model, next_record)
         # Find the Euclidean distance from the reference position to the current position
-        distance = math.sqrt(sum([(a-b)**2 for a, b in zip(reference_position, next_position)]))
+        distance = getDistance(reference_position, next_position)
         idx += 1
 
     # If we ended up past the end of the records then they don't have anything at the desired
     # distance
     if idx >= len(arm_records):
-        return None
+        return None, None
 
     return next_record, idx-1
 
@@ -152,7 +157,7 @@ def main():
     parser.add_argument(
         '--train_robot',
         type=str,
-        default='arm2',
+        default='arm1',
         help="The robot whose state is used as the training target.")
     parser.add_argument(
         '--video_scale',
@@ -371,6 +376,12 @@ def main():
                         sample_labels["goal_mark"] = "none"
                     else:
                         sample_labels["goal_mark"] = next_marks[1][0]
+                    # Get the distance to the next mark
+                    cur_pos = getGripperPosition(robot_model, arm_data.next_record())
+                    next_mark_offset = len(list(next_marks[0][1]))
+                    mark_record = arm_data.future_records()[next_mark_offset]
+                    mark_pos = getGripperPosition(robot_model, mark_record)
+                    sample_labels["goal_distance"] = getDistance(cur_pos, mark_pos)
 
                     # Now write the sample labels and frames.
                     writeSample(datawriter, sample_labels, sample_frames, rosdir.replace('/', ''),
