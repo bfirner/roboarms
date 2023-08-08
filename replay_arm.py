@@ -48,7 +48,10 @@ class ArmReplay(InterbotixManipulatorXS):
             args=args
         )
         self.corrections = [0,0,0,0,0]
+        print("Corrections are {}".format(corrections))
         for joint_name in corrections.keys():
+            print("correction keys are {}, join keys are {}".format(list(corrections.keys()),
+                self.arm.group_info.joint_names))
             # Don't try to correct the gripper or finger joints, only the arm joints
             if joint_name in self.arm.group_info.joint_names:
                 joint_idx = self.arm.group_info.joint_names.index(joint_name)
@@ -102,6 +105,9 @@ class ArmReplay(InterbotixManipulatorXS):
         """
         # The first five positions correspond to the arm
         arm_joints = 5
+        # Apply the calibration correction
+        for idx in range(len(self.corrections)):
+            position[idx] += self.corrections[idx]
         self.core.get_logger().info('Moving to {} in {}s.'.format(position[:arm_joints], delay))
         succ = self.arm.set_joint_positions(joint_positions=position[:arm_joints],
             moving_time=delay, blocking=False)
@@ -120,11 +126,13 @@ def get_calibration_diff(manip_yaml, puppet_yaml) -> dict:
     manip_values = {}
     puppet_values = {}
 
+    print("two files are {} and {}".format(manip_yaml, puppet_yaml))
     with open(manip_yaml, 'r') as data:
         manip_values = yaml.safe_load(data)
 
     with open(puppet_yaml, 'r') as data:
         puppet_values = yaml.safe_load(data)
+    print("two values are {} and {}".format(manip_values, puppet_values))
 
     # Do some sanity checks
     if 0 == len(manip_values) or 0 == len(puppet_values):
@@ -194,6 +202,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--puppet_model', default='px150')
     parser.add_argument('--puppet_name', default='arm2')
+    parser.add_argument('--src_robot', default='arm2',
+        help="The name of the robot in the bag path whose actions to copy.")
     parser.add_argument('--control_calibration', default='configs/arm2_calibration.yaml',
         help="If control_calibration and puppet_calibration differ, correct during replay.")
     parser.add_argument('--puppet_calibration', default='configs/arm2_calibration.yaml',
@@ -207,7 +217,6 @@ def main():
         type=int,
         default=10,
         help="Commands per second. The log will be converted to this rate.")
-    parser.add_argument('args', nargs=argparse.REMAINDER)
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -226,7 +235,10 @@ def main():
         return
 
     # Open the rosbag db file and read the arm topic
-    arm_topic = f"/{args.puppet_name}/joint_states"
+    # TODO FIXME Try using the command messages rather than the joint states themselves, the
+    # actual poses of the robot are probably a combination of the goal position and gravity.
+    # Or, alternatively, increase the gain values for position.
+    arm_topic = f"/{args.src_robot}/joint_states"
     arm_records = readArmRecords(args.bag_path, arm_topic)
 
     # Get calibration corrections and start the robot
