@@ -372,20 +372,19 @@ def main():
                     # Find the mark that we are progressing towards. Use 'none' if the current mark
                     # remains in effect through the end of the data.
                     next_marks = list(itertools.groupby(marks[(int(frame_nums[-1])):]))
-                    if len(next_marks) < 2:
-                        sample_labels["goal_mark"] = "none"
-                    else:
+                    # We cannot use this sample if there is no goal for the current motion.
+                    if len(next_marks) > 1:
                         sample_labels["goal_mark"] = next_marks[1][0]
-                    # Get the distance to the next mark
-                    cur_pos = getGripperPosition(robot_model, arm_data.next_record())
-                    next_mark_offset = len(list(next_marks[0][1]))
-                    mark_record = arm_data.future_records()[next_mark_offset]
-                    mark_pos = getGripperPosition(robot_model, mark_record)
-                    sample_labels["goal_distance"] = getDistance(cur_pos, mark_pos)
+                        # Get the distance to the next mark
+                        cur_pos = getGripperPosition(robot_model, arm_data.next_record())
+                        next_mark_offset = len(list(next_marks[0][1]))
+                        mark_record = arm_data.future_records()[next_mark_offset]
+                        mark_pos = getGripperPosition(robot_model, mark_record)
+                        sample_labels["goal_distance"] = getDistance(cur_pos, mark_pos)
 
-                    # Now write the sample labels and frames.
-                    writeSample(datawriter, sample_labels, sample_frames, rosdir.replace('/', ''),
-                        frame_nums)
+                        # Now write the sample labels and frames.
+                        writeSample(datawriter, sample_labels, sample_frames, rosdir.replace('/', ''),
+                            frame_nums)
 
 
     # Finished
