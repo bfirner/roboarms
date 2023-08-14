@@ -41,6 +41,12 @@ Collect video with
 The video is collected as a separate action because ros bags store video as invidual frames, which
 is space inefficient and a waste of time.
 
+## Replay
+
+Collected data can be replayed. By default the robot named 'arm2' is used, but that can be
+overriden in the arguments. To control 'arm2' using 'arm1' data, for example:
+> python3 replay_arm.py <rosbag> 60 --src_robot arm1 --control_calibration configs/arm1_calibration.yaml
+
 ## Labelling Data
 
 Running the labeller is simple.
@@ -63,7 +69,7 @@ the position vector to either move to the desired prediction distance (controlle
 `--prediction_distance` option in `dataprep.py`) or to move to the next goal.
 
 Training used the bee_analysis code like this:
-> python3 bee_analysis/VidActRecTrain.py --not_deterministic <something.tar> --outname <output path/name> --labels goal_mark goal_distance target_position --skip_metadata --convert_idx_to_classes 0
+> python3 bee_analysis/VidActRecTrain.py --not_deterministic <something.tar> --outname <output path/name> --labels goal_mark goal_distance target_position --skip_metadata --convert_idx_to_classes 0  --loss_fun MSELoss
 
 TODO: The `goal_mark` should be treated as a classification target while the other two are
 regression, but current they will all be treated as regression.
