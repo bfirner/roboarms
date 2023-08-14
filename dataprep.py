@@ -372,8 +372,9 @@ def main():
                     # Find the mark that we are progressing towards. Use 'none' if the current mark
                     # remains in effect through the end of the data.
                     next_marks = list(itertools.groupby(marks[(int(frame_nums[-1])):]))
-                    # We cannot use this sample if there is no goal for the current motion.
-                    if len(next_marks) > 1:
+                    # We cannot use this sample if there is no goal for the current motion or no
+                    # existing state.
+                    if sample_labels["initial_mark"] is not None and len(next_marks) > 1:
                         sample_labels["goal_mark"] = next_marks[1][0]
                         # Get the distance to the next mark
                         cur_pos = getGripperPosition(robot_model, arm_data.next_record())
