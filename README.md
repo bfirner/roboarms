@@ -69,14 +69,25 @@ the position vector to either move to the desired prediction distance (controlle
 `--prediction_distance` option in `dataprep.py`) or to move to the next goal.
 
 Training used the bee_analysis code like this:
-> python3 bee_analysis/VidActRecTrain.py --not_deterministic <something.tar> --outname <output path/name> --labels goal_mark goal_distance target_position --skip_metadata --convert_idx_to_classes 0  --loss_fun MSELoss
+> python3 bee_analysis/VidActRecTrain.py --not_deterministic <dataset.tar> --outname <name.pth> --labels goal_mark goal_distance target_position --skip_metadata --convert_idx_to_classes 0 --loss_fun MSELoss --modeltype alexnet --vector_inputs initial_mark current_position --epochs 25
+
+The `--labels` option specifies the DNN outputs. The `goal_mark` refers to the marks used during
+labelling and is the mark that the arm is moving towards. During inference this will be used to
+identify that the arm has reached one goal and has transitioned to the next one. The `goal_distance`
+is the distance from the gripper to the target and the `target_position` is the position to predict.
+That refers to either the position of the next mark or the position at `--prediction_distance`
+specified during dataprep, whichever is lesser.
+
+The `--vector_inputs` option specifies non-image DNN inputs. `initial_mark` is the mark that the arm
+is leaving from (and is necessary to control the robot's behavior) and `current_position` is the
+pose of the robot.
 
 TODO: The `goal_mark` should be treated as a classification target while the other two are
-regression, but current they will all be treated as regression.
+regression, but currently all outputs will be treated as regression.
 
-TODO: As described, this model will not function. It will also require the current state, as
-provided by the `initial_mark`. During inference, the controlling system will also need to track the
+## Inference
+
+> python3 inference_arm  --crop_x_offset 200 --video_scale 0.5 --modeltype alexnet --model <name.pth> --goal_sequence 0 1 --vector_inputs initial_mark current_position --outputs goal_mark goal_distance target_position
+
+TODO: During inference, the controlling system will also need to track the
 current state and feed it back using the model's prediction of goals.
-
-TODO: This training also treats everything like classification, so ignore the confusion matrix. It
-is meaningless for regression tasks.

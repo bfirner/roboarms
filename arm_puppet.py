@@ -69,7 +69,6 @@ import argparse
 import rclpy
 import sys
 import time
-import yaml
 from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
 
@@ -78,6 +77,8 @@ from std_msgs.msg import String
 from sensor_msgs.msg import JointState
 from interbotix_common_modules.angle_manipulation import angle_manipulation as ang
 from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
+
+from arm_utility import getCalibrationDiff
 
 class ArmPuppet(InterbotixManipulatorXS):
     # This class has a core type through which we will access robot data.
@@ -221,39 +222,6 @@ class ArmPuppet(InterbotixManipulatorXS):
             #    self.grip_moving = 0
 
 
-def get_calibration_diff(manip_yaml, puppet_yaml) -> dict:
-    """Find the differences between the manipulator and puppet servos.
-
-    Arguments:
-        manip_yaml  (str): Path to manipulator calibration
-        puppet_yaml (str): Path to puppet calibration
-    Returns:
-        correction (dict[str, float]): Correction to apply to manipulator positions.
-    """
-    manip_values = {}
-    puppet_values = {}
-
-    with open(manip_yaml, 'r') as data:
-        manip_values = yaml.safe_load(data)
-
-    with open(puppet_yaml, 'r') as data:
-        puppet_values = yaml.safe_load(data)
-
-    # Do some sanity checks
-    if 0 == len(manip_values) or 0 == len(puppet_values):
-        raise RuntimeError(f"Failed to load calibration values.")
-
-    if list(manip_values.keys()) != list(puppet_values.keys()):
-        raise RuntimeError(f"Calibration parameters do not match.")
-
-    # Create the corrections and return time.
-    corrections = {}
-    for joint in manip_values.keys():
-        corrections[joint] = puppet_values[joint] - manip_values[joint]
-
-    return corrections
-
-
 def main(args=None):
     p = argparse.ArgumentParser()
     p.add_argument('--puppet_model', default='px150')
@@ -267,7 +235,7 @@ def main(args=None):
     ros_args = p.parse_args(command_line_args)
 
     # Get calibration corrections
-    corrections = get_calibration_diff(ros_args.control_calibration, ros_args.puppet_calibration)
+    corrections = getCalibrationDiff(ros_args.control_calibration, ros_args.puppet_calibration)
 
     bot = ArmPuppet(ros_args, corrections, args=args)
     bot.start_robot()
