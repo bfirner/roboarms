@@ -98,17 +98,27 @@ class RosHandler(Node):
                 # The crop is automatically centered if the x and y parameters are not used.
                 .filter('crop', out_w=self.crop_width, out_h=self.crop_height,
                     x=self.post_scale_crop_x, y=self.post_scale_crop_y)
-                # Output to another pipe so that the data can be read back in
-                .output('pipe:', pix_fmt='rgb24')
-                .run_async(pipe_stdin=True, pipe_stdout=True, quiet=True)
             )
+            if self.channels_per_frame == 1:
+                self.input_stream = (self.input_stream
+                    # Output to another pipe so that the data can be read back in
+                    .output('pipe:', format='rawvideo', pix_fmt='rgb8')
+                    .run_async(pipe_stdin=True, pipe_stdout=True, quiet=True)
+                )
+            else:
+                self.input_stream = (self.input_stream
+                    # Output to another pipe so that the data can be read back in
+                    .output('pipe:', format='rawvideo', pix_fmt='rgb24')
+                    .run_async(pipe_stdin=True, pipe_stdout=True, quiet=True)
+                )
 
         # Process the frame
-        # TODO FIXME Maybe this in/out stream isn't correct
         self.input_stream.stdin.write(numpy.uint8(msg.data).tobytes())
-        crop_bytes = self.input_stream.stdout.read(self.crop_width * self.crop_height * 3)
-        out_img = numpy.frombuffer(crop_bytes, numpy.uint8).reshape([self.crop_height, self.crop_width,
-            3])
+        crop_bytes = self.input_stream.stdout.read(self.crop_width * self.crop_height * self.channels_per_frame)
+        # Reshape the frame and put the channels before the other dimensions
+        np_frame = numpy.frombuffer(crop_bytes, numpy.uint8).reshape([1, self.crop_height, self.crop_width,
+            self.channels_per_frame])
+        out_img = torch.tensor(data=np_frame, dtype=torch.uint8).permute(0, 3, 1, 2)
 
         # TODO Check frames_per_sample.
         # TODO Check channel_per_sample
@@ -118,7 +128,7 @@ class RosHandler(Node):
             # Store this frame for handling by the consumer
             self.frame_nsec = msg.header.stamp._sec * 10**9 + msg.header.stamp._nanosec
             # TODO This should probably be a blit operation into a pinned GPU tensor to save memory
-            self.frame = torch.tensor(out_img)
+            self.frame = out_img
 
     def handle_joints(self, msg: JointState) -> None:
         if self.joint_names is None:
@@ -210,7 +220,7 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
         # frame rate the only thing that will update between commands is the robot's current
         # position.
         with data_read_lock:
-            new_frame = image_processor.frame.cuda()
+            new_frame = image_processor.frame.float().cuda()
             joint_positions = image_processor.position
 
         # Set up vector inputs
@@ -393,7 +403,7 @@ def main():
     # Arguments for the createModel function
     model_args = {
         'model_type': args.modeltype,
-        'in_frames': args.frames_per_sample,
+        'in_channels': args.out_channels*args.frames_per_sample,
         'frame_height': args.height,
         'frame_width': args.width,
         'vector_input_size': vector_input_size,
