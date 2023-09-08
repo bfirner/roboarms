@@ -89,5 +89,7 @@ regression, but currently all outputs will be treated as regression.
 
 > python3 inference_arm  --crop_x_offset 200 --video_scale 0.5 --modeltype alexnet --model <name.pth> --goal_sequence 0 1 --vector_inputs initial_mark current_position --outputs goal_mark goal_distance target_position
 
+> python3 inference_arm.py --crop_x_offset 200 --video_scale 0.5 --modeltype alexnet --model_checkpoint <name.pth> --goal_sequence 0 1 --vector_inputs initial_mark current_position --out_channels 1 --dnn_outputs goal_mark goal_distance target_position
+
 TODO: During inference, the controlling system will also need to track the
 current state and feed it back using the model's prediction of goals.

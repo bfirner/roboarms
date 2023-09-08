@@ -118,7 +118,10 @@ class RosHandler(Node):
         # Reshape the frame and put the channels before the other dimensions
         np_frame = numpy.frombuffer(crop_bytes, numpy.uint8).reshape([1, self.crop_height, self.crop_width,
             self.channels_per_frame])
-        out_img = torch.tensor(data=np_frame, dtype=torch.uint8).permute(0, 3, 1, 2)
+        # TODO The exact frame preprocessing must match what was done in dataprep, but currently the
+        # image formats are different (e.g. in dataprep images are saved as pngs whereas here they
+        # are coming directly from the video)
+        out_img = torch.tensor(data=np_frame, dtype=torch.uint8).permute(0, 3, 1, 2) / 255.0
 
         # TODO Check frames_per_sample.
         # TODO Check channel_per_sample
@@ -230,8 +233,10 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
             vector_input_locations[input_name] = out_idx
             if input_name == 'current_position':
                 vector_inputs[0, out_idx:out_idx+len(robot_joint_names)].copy_(torch.tensor(joint_positions))
+                out_idx += len(robot_joint_names)
             elif input_name == 'initial_mark':
                 vector_inputs[0, out_idx] = goal_sequence[goal_idx]
+                out_idx += 1
 
         # goal_mark determines the state to feed back to the network via the vector inputs
         # The initial_mark status input (if present) and
@@ -241,6 +246,7 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
         net_out = net.forward(new_frame, vector_inputs)
         predicted_distance = net_out[0, output_locations['goal_distance']].item()
         next_position = net_out[0, output_locations['target_position']].tolist()
+        print("Requesting position {}".format(next_position))
         # TODO This shouldn't be a magic variable
         if predicted_distance < 0.1:
             goal_idx = (goal_idx + 1) % len(goal_sequence)
