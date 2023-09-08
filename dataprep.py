@@ -367,19 +367,34 @@ def main():
                         sample_labels["target_{}".format(key)] = value
                     for key, value in current_data.items():
                         sample_labels["current_{}".format(key)] = value
-                    # This is the mark of the initial state for this maneuver
-                    sample_labels["initial_mark"] = marks[int(frame_nums[-1])]
                     # Find the mark that we are progressing towards. Use 'none' if the current mark
-                    # remains in effect through the end of the data.
-                    next_marks = list(itertools.groupby(marks[(int(frame_nums[-1])):]))
+                    # remains in effect through the end of the data. Use itertools.groupby to get
+                    # the transitions for each mark.
+                    # Each tuple in next_marks will be a pair of the mark itself and a list of all
+                    # of that same kay, which can be used to determine how many frames that key
+                    # remains the target.
+                    #next_marks = list(itertools.groupby(marks[(int(frame_nums[-1])):]))
+                    future_marks = marks[(int(frame_nums[-1])):]
+                    cur_mark = future_marks[0]
+                    marks_until_transition = 0
+                    while marks_until_transition < len(future_marks) and future_marks[marks_until_transition] == cur_mark:
+                        marks_until_transition += 1
+                    if marks_until_transition <= len(future_marks):
+                        next_mark = future_marks[marks_until_transition]
+                    else:
+                        next_mark = None
+                    # This is the mark of the initial state for this maneuver
+                    sample_labels["initial_mark"] = cur_mark
+
                     # We cannot use this sample if there is no goal for the current motion or no
                     # existing state.
-                    if sample_labels["initial_mark"] is not None and len(next_marks) > 1:
-                        sample_labels["goal_mark"] = next_marks[1][0]
+                    # TODO FIXME Only accept goals in our training list
+                    if cur_mark is not None and next_mark is not None:
+                        # The goal mark is the one currently being moved towards
+                        sample_labels["goal_mark"] = cur_mark
                         # Get the distance to the next mark
                         cur_pos = getGripperPosition(robot_model, arm_data.next_record())
-                        next_mark_offset = len(list(next_marks[0][1]))
-                        mark_record = arm_data.future_records()[next_mark_offset]
+                        mark_record = arm_data.future_records()[marks_until_transition]
                         mark_pos = getGripperPosition(robot_model, mark_record)
                         sample_labels["goal_distance"] = getDistance(cur_pos, mark_pos)
 
