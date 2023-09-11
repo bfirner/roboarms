@@ -248,7 +248,7 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
         next_position = net_out[0, output_locations['target_position']].tolist()
         print("Requesting position {}".format(next_position))
         # TODO This shouldn't be a magic variable
-        if predicted_distance < 0.1:
+        if predicted_distance < 0.01:
             goal_idx = (goal_idx + 1) % len(goal_sequence)
             print("Switching to goal {}".format(goal_sequence[goal_idx]))
         # Extract the next position from the model outputs and send it to the robot.

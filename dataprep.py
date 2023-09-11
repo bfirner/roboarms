@@ -379,7 +379,7 @@ def main():
                     marks_until_transition = 0
                     while marks_until_transition < len(future_marks) and future_marks[marks_until_transition] == cur_mark:
                         marks_until_transition += 1
-                    if marks_until_transition <= len(future_marks):
+                    if marks_until_transition < len(future_marks):
                         next_mark = future_marks[marks_until_transition]
                     else:
                         next_mark = None
