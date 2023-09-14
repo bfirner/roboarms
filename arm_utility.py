@@ -88,8 +88,9 @@ class ArmReplay(InterbotixManipulatorXS):
         # straightforward way to change it.
         self.gripper.left_finger_lower_limit -= 0.0012
 
-        # Home position is a non-thunking position since nothing will contact.
-        self.arm.go_to_home_pose(moving_time = 1.0, blocking = True)
+        # Home position is a non-thunking position, meaning it shouldn't be bumping into anything to
+        # start. Move there in 2 seconds so that it isn't too jerky.
+        self.arm.go_to_home_pose(moving_time = 2.0, blocking = True)
         self.core.get_logger().info('Arm is in home position {}'.format(self.core.joint_states.position[:5]))
 
         self.core.get_logger().info('Ready to receive commands.')

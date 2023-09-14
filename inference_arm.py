@@ -98,6 +98,7 @@ class RosHandler(Node):
                 # The crop is automatically centered if the x and y parameters are not used.
                 .filter('crop', out_w=self.crop_width, out_h=self.crop_height,
                     x=self.post_scale_crop_x, y=self.post_scale_crop_y)
+                .filter('normalize', independence=1.0)
             )
             if self.channels_per_frame == 1:
                 self.input_stream = (self.input_stream
@@ -252,7 +253,7 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
             goal_idx = (goal_idx + 1) % len(goal_sequence)
             print("Switching to goal {}".format(goal_sequence[goal_idx]))
         # Extract the next position from the model outputs and send it to the robot.
-        position_queue.put(next_position, update_delay_s)
+        position_queue.put((next_position, update_delay_s))
         # TODO The sleep should be slightly less than the movement time to make movement appear
         # smooth and should also consider things like inference time. Just multiplying by 0.95 here
         # is a hack.
@@ -413,7 +414,8 @@ def main():
         'frame_height': args.height,
         'frame_width': args.width,
         'vector_input_size': vector_input_size,
-        'output_size': dnn_output_size
+        'output_size': dnn_output_size,
+        'other_args': {'skip_last_relu': True}
     }
 
     # Arguments for RosHandler constructor

@@ -234,11 +234,25 @@ def main():
         default=0.01,
         help='Distance (in meters) of the future position of the robot gripper in the dataset.')
     parser.add_argument(
+        '--goals',
+        type=int,
+        # Goals to give the robot arm.
+        nargs='+',
+        required=True,
+        default=[],
+        help='Goals to give the robot arm.')
+    parser.add_argument(
         '--robot_model',
         type=str,
         required=False,
         default="px150",
         help='The name of the interbotix robot model.')
+    parser.add_argument(
+        '--nonormalize',
+        required=False,
+        default=False,
+        action='store_true',
+        help='Images are normalized by default, but this can be disabled.')
 
     args = parser.parse_args()
 
@@ -322,8 +336,9 @@ def main():
         sampler = VideoSampler(vid_path, num_samples, args.frames_per_sample, args.interval,
             out_width=args.width, out_height=args.height, crop_noise=args.crop_noise,
             scale=args.video_scale, crop_x_offset=args.crop_x_offset,
-            crop_y_offset=args.crop_y_offset, channels=3, normalize=False)
+            crop_y_offset=args.crop_y_offset, channels=3, normalize=(not args.nonormalize))
 
+        frames_sampled = 0
         for frame_data in sampler:
             sample_frames, video_path, frame_nums = frame_data
 
@@ -389,7 +404,7 @@ def main():
                     # We cannot use this sample if there is no goal for the current motion or no
                     # existing state.
                     # TODO FIXME Only accept goals in our training list
-                    if cur_mark is not None and next_mark is not None:
+                    if cur_mark is not None and next_mark is not None and cur_mark in args.goals:
                         # The goal mark is the one currently being moved towards
                         sample_labels["goal_mark"] = cur_mark
                         # Get the distance to the next mark
@@ -401,6 +416,10 @@ def main():
                         # Now write the sample labels and frames.
                         writeSample(datawriter, sample_labels, sample_frames, rosdir.replace('/', ''),
                             frame_nums)
+                        # Keep the user updated on dataset progress
+                        frames_sampled += 1
+                        if 0 == frames_sampled % 500:
+                            print("Accepted {} from samples {}".format(frames_sampled, vid_path))
 
 
     # Finished
