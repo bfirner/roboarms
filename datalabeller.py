@@ -173,6 +173,8 @@ def main():
                 if in_bytes:
                     # Convert to numpy, and then to a display image
                     np_frame = numpy.frombuffer(in_bytes, numpy.uint8).reshape(height, width, channels)
+                    # Swap RGB to BGR for proper display in OpenCV
+                    np_frame = numpy.stack((np_frame[:,:,2], np_frame[:,:,1], np_frame[:,:,0]), 2)
                     #in_frame = in_frame.permute(0, 3, 1, 2).to(dtype=torch.float).cuda()
                     # Adjust the frame position. The next_frame variable is relative to the cur_frame.
                     cur_frame += 1
@@ -193,7 +195,7 @@ def main():
                     print("Reached the end of the video.")
                     return
         else:
-            # Otherise refresh the frame buffer with the last fetched frame
+            # Otherwise refresh the frame buffer with the last fetched frame
             np_frame = numpy.copy(past_frame_buffer[-1])
             if label_on and cur_segment is not None:
                 labels['behavior'][cur_frame+next_frame] = cur_segment
