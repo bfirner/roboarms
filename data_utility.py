@@ -210,6 +210,10 @@ class ArmDataInterpolator:
         """Return a slice from the current index up to and including the given offset."""
         return self.records[self.last_idx:offset+1]
 
+    def last_time(self):
+        """Return the last timestamp in the data."""
+        return self.records[-1]['timestamp']
+
     def interpolate(self, timestamp):
         """Interpolate arm data to match the given video timestamp.
 

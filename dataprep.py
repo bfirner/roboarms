@@ -346,12 +346,17 @@ def main():
             # only a single frame per sample)
             first_frame = int(frame_nums[0])
             last_frame = int(frame_nums[-1])
-            current_data = arm_data.interpolate(video_timestamps[last_frame])
-            # TODO Also fetch history? Option on the command line?
-            # Fetch the next state after some end effector movement distance to be the prediction
-            # target
-            next_state, offset = getStateAtNextPosition(current_data, arm_data.future_records(),
-                    args.prediction_distance, robot_model)
+            if video_timestamps[last_frame] <= arm_data.last_time():
+                current_data = arm_data.interpolate(video_timestamps[last_frame])
+                # TODO Also fetch history? Option on the command line?
+                # Fetch the next state after some end effector movement distance to be the prediction
+                # target
+                next_state, offset = getStateAtNextPosition(current_data, arm_data.future_records(),
+                        args.prediction_distance, robot_model)
+            else:
+                # If the video is longer than the ros records (which isn't an error, they could have
+                # been stopped in any order) then there is no 'next state'.
+                next_state = None
 
             if next_state is not None:
                 # Find the frame number that corresponds to that next_state
