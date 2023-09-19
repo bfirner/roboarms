@@ -21,6 +21,7 @@ import torch
 import webdataset as wds
 import yaml
 
+from arm_utility import (getDistance, getGripperPosition, getStateAtNextPosition)
 from data_utility import (ArmDataInterpolator, readArmRecords, readLabels, readVideoTimestamps)
 from bee_analysis.utility.video_utility import (getVideoInfo, VideoSampler)
 # These are the robot descriptions to match function calls in the modern robotics package.
@@ -62,80 +63,6 @@ def writeSample(dataset, sample_labels, frames, video_source, frame_nums):
     for i in range(frame_count):
         sample[f"{i}.png"] = buffers[i].getbuffer()
     dataset.write(sample)
-
-
-def getGripperPosition(robot_model, arm_record):
-    """Get the x,y,z position of the gripper relative to the waist.
-
-    This is basically the same as the get_ee_pose function for an interbotix arm, but takes in an
-    arbitrary set of joint states. Like that function, this just calls something from the
-    modern_robotics package.
-
-    The robot model should be fetched from
-         getattr(interbotix_xs_modules.xs_robot.mr_descriptions, 'px150')
-
-    Arguments:
-        robot_model      (class): String that identifies this robot arm in the interbotix modules.
-        arm_record ({str: data}): ROS message data for the robot arm.
-    Returns:
-        x,y,z tuple of the gripper location.
-    """
-    # TODO Since a mini-goal of this project is to handle actuation without calibration we won't be
-    # using this for labels (because it would require calibration for the x,y,z location of the
-    # gripper to be meaningful), but will be using this to determine the moved distance of the
-    # gripper, and from that we will determine the next pose to predict.
-    # The arm joints are separate from the gripper, which is represented by three "joints" even
-    # though it is a single motor.
-    gripper_names = ["gripper", "left_finger", "right_finger"]
-    names = [name for name in arm_record['name'] if name not in gripper_names]
-    joint_positions = [
-        arm_record['position'][names.index(name)] for name in names
-    ]
-    # 'M' is the home configuration of the robot, Slist has the joint screw axes at the home
-    # position
-    T = modern_robotics.FKinSpace(robot_model.M, robot_model.Slist, joint_positions)
-    # Return the x,y,z components of the translation matrix.
-    return (T[0][-1], T[1][-1], T[2][-2])
-
-
-def getDistance(record_a, record_b):
-    """Return the Euclidean distance of the manipulator in record a and record b"""
-    return math.sqrt(sum([(a-b)**2 for a, b in zip(record_a, record_b)]))
-
-
-def getStateAtNextPosition(reference_record, arm_records, movement_distance, robot_model):
-    """Get the arm state after the end affector moves the given distance
-
-    Arguments:
-        reference_record  ({str: data}): Reference position
-        arm_records (list[{str: data}]): ROS data for the robot arm. Search begins at index 0.
-        movement_distance (float): Distance in meters desired from the reference position.
-        robot_model      (class): String that identifies this robot arm in the interbotix modules.
-    Returns:
-        tuple({str: data}, int): The arm record at the desired distance, or None if the records end
-                                 before reaching the desired distance. Also returns the index of
-                                 this record.
-    """
-    # Loop until we run out of records or hit the desired movement distance.
-    reference_position = getGripperPosition(robot_model, reference_record)
-    distance = 0
-    idx = 0
-    next_record = None
-    # Search for the first record with the desired distance
-    while idx < len(arm_records) and distance < movement_distance:
-        next_record = arm_records[idx]
-        next_position = getGripperPosition(robot_model, next_record)
-        # Find the Euclidean distance from the reference position to the current position
-        distance = getDistance(reference_position, next_position)
-        idx += 1
-
-    # If we ended up past the end of the records then they don't have anything at the desired
-    # distance
-    if idx >= len(arm_records):
-        return None, None
-
-    return next_record, idx-1
-
 
 def main():
     parser = argparse.ArgumentParser()

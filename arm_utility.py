@@ -1,4 +1,5 @@
-# Utilities for arm handling, such as calibration data or controlling an arm.
+# Utilities for arm handling, such as calibration data or controlling an arm, and to analyze robot
+# joint states, such as from a rosbag.
 
 
 import yaml
@@ -7,6 +8,78 @@ import rclpy
 from interbotix_common_modules.angle_manipulation import angle_manipulation as ang
 from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
 
+
+def getGripperPosition(robot_model, arm_record):
+    """Get the x,y,z position of the gripper relative to the waist.
+
+    This is basically the same as the get_ee_pose function for an interbotix arm, but takes in an
+    arbitrary set of joint states. Like that function, this just calls something from the
+    modern_robotics package.
+
+    The robot model should be fetched from
+         getattr(interbotix_xs_modules.xs_robot.mr_descriptions, 'px150')
+
+    Arguments:
+        robot_model      (class): String that identifies this robot arm in the interbotix modules.
+        arm_record ({str: data}): ROS message data for the robot arm.
+    Returns:
+        x,y,z tuple of the gripper location.
+    """
+    # TODO Since a mini-goal of this project is to handle actuation without calibration we won't be
+    # using this for labels (because it would require calibration for the x,y,z location of the
+    # gripper to be meaningful), but will be using this to determine the moved distance of the
+    # gripper, and from that we will determine the next pose to predict.
+    # The arm joints are separate from the gripper, which is represented by three "joints" even
+    # though it is a single motor.
+    gripper_names = ["gripper", "left_finger", "right_finger"]
+    names = [name for name in arm_record['name'] if name not in gripper_names]
+    joint_positions = [
+        arm_record['position'][names.index(name)] for name in names
+    ]
+    # 'M' is the home configuration of the robot, Slist has the joint screw axes at the home
+    # position
+    T = modern_robotics.FKinSpace(robot_model.M, robot_model.Slist, joint_positions)
+    # Return the x,y,z components of the translation matrix.
+    return (T[0][-1], T[1][-1], T[2][-2])
+
+
+def getDistance(record_a, record_b):
+    """Return the Euclidean distance of the manipulator in record a and record b"""
+    return math.sqrt(sum([(a-b)**2 for a, b in zip(record_a, record_b)]))
+
+
+def getStateAtNextPosition(reference_record, arm_records, movement_distance, robot_model):
+    """Get the arm state after the end affector moves the given distance
+
+    Arguments:
+        reference_record  ({str: data}): Reference position
+        arm_records (list[{str: data}]): ROS data for the robot arm. Search begins at index 0.
+        movement_distance (float): Distance in meters desired from the reference position.
+        robot_model      (class): String that identifies this robot arm in the interbotix modules.
+    Returns:
+        tuple({str: data}, int): The arm record at the desired distance, or None if the records end
+                                 before reaching the desired distance. Also returns the index of
+                                 this record.
+    """
+    # Loop until we run out of records or hit the desired movement distance.
+    reference_position = getGripperPosition(robot_model, reference_record)
+    distance = 0
+    idx = 0
+    next_record = None
+    # Search for the first record with the desired distance
+    while idx < len(arm_records) and distance < movement_distance:
+        next_record = arm_records[idx]
+        next_position = getGripperPosition(robot_model, next_record)
+        # Find the Euclidean distance from the reference position to the current position
+        distance = getDistance(reference_position, next_position)
+        idx += 1
+
+    # If we ended up past the end of the records then they don't have anything at the desired
+    # distance
+    if idx >= len(arm_records):
+        return None, None
+
+    return next_record, idx-1
 
 def getCalibrationDiff(manip_yaml, puppet_yaml) -> dict:
     """Find the differences between the manipulator and puppet servos.
@@ -26,7 +99,6 @@ def getCalibrationDiff(manip_yaml, puppet_yaml) -> dict:
 
     with open(puppet_yaml, 'r') as data:
         puppet_values = yaml.safe_load(data)
-    print("two values are {} and {}".format(manip_values, puppet_values))
 
     # Do some sanity checks
     if 0 == len(manip_values) or 0 == len(puppet_values):
@@ -71,10 +143,9 @@ class ArmReplay(InterbotixManipulatorXS):
         )
         self.position_commands = cmd_queue
         self.corrections = [0,0,0,0,0]
-        print("Corrections are {}".format(corrections))
         for joint_name in corrections.keys():
-            print("correction keys are {}, join keys are {}".format(list(corrections.keys()),
-                self.arm.group_info.joint_names))
+            #print("correction keys are {}, join keys are {}".format(list(corrections.keys()),
+            #    self.arm.group_info.joint_names))
             # Don't try to correct the gripper or finger joints, only the arm joints
             if joint_name in self.arm.group_info.joint_names:
                 joint_idx = self.arm.group_info.joint_names.index(joint_name)

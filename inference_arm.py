@@ -169,6 +169,7 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
     net = createModel(**dnn_args)
     restoreModel(model_checkpoint, net)
     net = net.eval().cuda()
+    print("Network is {}".format(net))
 
     # Initialize ROS2 nodes
     #rclpy.init()
@@ -191,7 +192,7 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
             # TODO FIXME Whoops, looks like training used all of the joints
             vector_input_locations[input_name] = slice(out_idx, out_idx + len(robot_joint_names) + 3)
             out_idx += len(robot_joint_names) + 3
-        elif input_name == 'initial_mark':
+        elif input_name == 'goal_mark':
             vector_input_locations[input_name] = out_idx
             out_idx += 1
         else:
@@ -235,12 +236,11 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
             if input_name == 'current_position':
                 vector_inputs[0, out_idx:out_idx+len(robot_joint_names)].copy_(torch.tensor(joint_positions))
                 out_idx += len(robot_joint_names)
-            elif input_name == 'initial_mark':
+            elif input_name == 'goal_mark':
                 vector_inputs[0, out_idx] = goal_sequence[goal_idx]
                 out_idx += 1
 
         # goal_mark determines the state to feed back to the network via the vector inputs
-        # The initial_mark status input (if present) and
         # goal_distance is used to determine when to switch goals.
         # The target_position output contains the next set of joint positions.
 

@@ -18,6 +18,7 @@ import pathlib
 import sys
 import yaml
 
+from arm_utility import (getDistance, getGripperPosition)
 from nml_bag import Reader
 # For annotation drawing
 from PIL import ImageDraw, ImageFont, ImageOps
@@ -225,6 +226,8 @@ def main():
             mark_str = "Current mark: {}".format(labels['mark'][cur_frame+next_frame])
             cv2.putText(img=np_frame, text=mark_str, org=(x, y),
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=6)
+        # TODO Search for a previous mark, find the distance to it from the current state, and
+        # display the distance.
 
         # Display the frame.
         cv2.imshow("arm video", np_frame)
@@ -288,21 +291,31 @@ def main():
                 action = True
             elif isKey(inkey, ord('m')):
                 # Mark an action
-                marknum = cv2.waitKey(0)
-                mark = marknum - ord('0')
-                if 0 <= mark and mark <= 9:
-                    labels['mark'][cur_frame+next_frame] = mark
-                    print("Mark {} written for frame {}".format(mark, cur_frame+next_frame))
-                    action = True
-                else:
-                    print("Mark must be a number, not {}".format(marknum))
+                mark = cv2.waitKey(0)
+                mark_value = 0
+                while 0 <= mark_value:
+                    mark_digit = mark - ord('0')
+                    if 0 <= mark_digit and mark_digit <= 9:
+                        # Update the value for this mark
+                        mark_value = 10 * mark_value + mark_digit
+                        # Get the next key
+                        mark = cv2.waitKey(0)
+                    elif ord('\n') == mark or ord('\r') == mark:
+                        labels['mark'][cur_frame+next_frame] = mark_value
+                        print("Mark {} written for frame {}".format(mark_value, cur_frame+next_frame))
+                        mark_value = -1
+                    else:
+                        print("Mark must be a number, not {}".format(mark))
+                        mark_value = -1
+                # Redraw the screen
+                action = True
             elif isKey(inkey, ord('h')):
                 print("s: Save labels")
                 print("q: Quit (without saving)")
                 print("l: Toggle labelling on or off")
                 print("k: Mark segment as keep")
                 print("d: Mark segment as drop")
-                print("m[0-9]: Mark action")
+                print("m[0-9]+: Mark action. Type a number and then the enter key.")
                 # TODO Add an autoplay?
 
     # Remove the window

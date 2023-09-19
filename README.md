@@ -69,7 +69,7 @@ the position vector to either move to the desired prediction distance (controlle
 `--prediction_distance` option in `dataprep.py`) or to move to the next goal.
 
 Training used the bee_analysis code like this:
-> python3 bee_analysis/VidActRecTrain.py --not_deterministic <dataset.tar> --outname <name.pth> --labels goal_mark goal_distance target_position --skip_metadata --convert_idx_to_classes 0 --loss_fun MSELoss --modeltype alexnet --vector_inputs initial_mark current_position --epochs 20
+> python3 bee_analysis/VidActRecTrain.py --not_deterministic <dataset.tar> --outname <name.pth> --labels goal_distance target_position --skip_metadata --convert_idx_to_classes 0 --loss_fun MSELoss --modeltype alexnet --vector_inputs goal_mark current_position --epochs 20
 
 The `--labels` option specifies the DNN outputs. The `goal_mark` refers to the marks used during
 labelling and is the mark that the arm is moving towards. During inference this will be used to
@@ -91,7 +91,8 @@ compensate.
 
 ## Inference
 
-> python3 inference_arm.py --crop_x_offset 200 --video_scale 0.5 --modeltype alexnet --model_checkpoint <name.pth> --goal_sequence 0 1 --cps 5 --vector_inputs initial_mark current_position --out_channels 1 --dnn_outputs goal_mark goal_distance target_position
+> python3 inference_arm.py --crop_x_offset 200 --video_scale 0.5 --modeltype alexnet --model_checkpoint <name.pth> --goal_sequence 0 1 --cps 5 --vector_inputs goal_mark current_position --out_channels 1 --dnn_outputs goal_distance target_position
 
 TODO: During inference, the controlling system will also need to track the
 current state and feed it back using the model's prediction of goals.
+
