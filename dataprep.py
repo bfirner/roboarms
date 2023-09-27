@@ -91,7 +91,7 @@ def main():
         type=float,
         required=False,
         default=1.0,
-        help="Scaling to apply to x and y dimensions before cropping."
+        help="Scaling to apply to x and y dimensions before cropping. "
         "A value of 0.5 will yield 0.25 resolution.")
     parser.add_argument(
         '--width',
@@ -278,8 +278,8 @@ def main():
                 # TODO Also fetch history? Option on the command line?
                 # Fetch the next state after some end effector movement distance to be the prediction
                 # target
-                next_state, offset = getStateAtNextPosition(current_data, arm_data.future_records(),
-                        args.prediction_distance, robot_model)
+                next_state, next_state_offset = getStateAtNextPosition(current_data, arm_data.future_records(),
+                        args.prediction_distance, args.robot_model)
             else:
                 # If the video is longer than the ros records (which isn't an error, they could have
                 # been stopped in any order) then there is no 'next state'.
@@ -292,28 +292,48 @@ def main():
                 # clear separation between actions, ensuring that the robot will fully complete an
                 # action by moving all the way into the desired position before moving on to the next
                 # action.
+                last_frame += 1
                 while (last_frame < len(video_timestamps) and
                         labels['mark'][last_frame] is not None and
                         video_timestamps[last_frame] < next_state['timestamp']):
                     last_frame += 1
 
-                # If we exited because of the mark then we need to set a new next state
+                # If we exited the previous loop because we encountered a new mark before reaching
+                # the timestamp of the next state (determined by distance) then we need to set a new
+                # next state at the frame before that mark. Walk forward from the current data to
+                # the time of the transition
                 if labels['mark'][last_frame] is not None:
-                    next_state = arm_data.interpolate(video_timestamps[last_frame])
+                    last_frame -= 1
+                    while arm_data.records[next_state_offset]['timestamp'] > video_timestamps[last_frame]:
+                        next_state_offset -= 1
+                    next_state = arm_data.records[next_state_offset]
 
                 # Verify that this data should be used
                 # Check from the past frames to the frame at the target position in the future
                 frame_range = list(range(first_frame, last_frame+1))
                 any_discards = any([labels['behavior'][frame_num] == "discard" for frame_num in frame_range])
+                any_nones = any([labels['behavior'][frame_num] == None for frame_num in frame_range])
 
-                if not any_discards:
+                if not any_discards and not any_nones:
                     # Combine the target labels and the current state into a single table for this
                     # sample.
                     sample_labels = {}
                     for key, value in next_state.items():
                         sample_labels["target_{}".format(key)] = value
+                        # Expand the full list of joint positions to the arm position and gripper
+                        # position
+                        # TODO This assumes a joint setup as in the Interbotix px150 where the first
+                        # five joints are the arm
+                        if key == 'position':
+                            sample_labels["target_{}".format('arm_position')] = value[0:5]
                     for key, value in current_data.items():
                         sample_labels["current_{}".format(key)] = value
+                        # Expand the full list of joint positions to the arm position and gripper
+                        # position
+                        # TODO This assumes a joint setup as in the Interbotix px150 where the first
+                        # five joints are the arm
+                        if key == 'position':
+                            sample_labels["current_{}".format('arm_position')] = value[0:5]
                     # Find the mark that we are progressing towards. Use 'none' if the current mark
                     # remains in effect through the end of the data. Use itertools.groupby to get
                     # the transitions for each mark.
@@ -323,8 +343,8 @@ def main():
                     #next_marks = list(itertools.groupby(marks[(int(frame_nums[-1])):]))
                     future_marks = marks[(int(frame_nums[-1])):]
                     cur_mark = future_marks[0]
-                    marks_until_transition = 0
-                    while marks_until_transition < len(future_marks) and future_marks[marks_until_transition] == cur_mark:
+                    marks_until_transition = 1
+                    while marks_until_transition < len(future_marks) and future_marks[marks_until_transition] == None:
                         marks_until_transition += 1
                     if marks_until_transition < len(future_marks):
                         next_mark = future_marks[marks_until_transition]
@@ -335,15 +355,41 @@ def main():
 
                     # We cannot use this sample if there is no goal for the current motion or no
                     # existing state.
-                    # TODO FIXME Only accept goals in our training list
+                    # Only accept goals in our training list
                     if cur_mark is not None and next_mark is not None and cur_mark in args.goals:
                         # The goal mark is the one currently being moved towards
                         sample_labels["goal_mark"] = cur_mark
                         # Get the distance to the next mark
-                        cur_pos = getGripperPosition(robot_model, arm_data.next_record())
+                        cur_pos = getGripperPosition(args.robot_model, arm_data.next_record())
                         mark_record = arm_data.future_records()[marks_until_transition]
-                        mark_pos = getGripperPosition(robot_model, mark_record)
+                        mark_pos = getGripperPosition(args.robot_model, mark_record)
                         sample_labels["goal_distance"] = getDistance(cur_pos, mark_pos)
+
+                        # Go backwards to create several different status inputs for previous mark
+                        # distances.
+                        prev_1cm_record = arm_data.get_record_at_distance(0.01)
+                        if prev_1cm_record is None:
+                            # Use a default 10cm distance if the distance to the goal didn't exist
+                            sample_labels["goal_distance_prev_1cm"] = 0.1
+                        else:
+                            prev_1cm_pos = getGripperPosition(args.robot_model, prev_1cm_record)
+                            sample_labels["goal_distance_prev_1cm"] = getDistance(prev_1cm_pos, mark_pos)
+
+                        prev_2cm_record = arm_data.get_record_at_distance(0.02)
+                        if prev_2cm_record is None:
+                            # Use a default 10cm distance if the distance to the goal didn't exist
+                            sample_labels["goal_distance_prev_2cm"] = 0.1
+                        else:
+                            prev_2cm_pos = getGripperPosition(args.robot_model, prev_2cm_record)
+                            sample_labels["goal_distance_prev_2cm"] = getDistance(prev_2cm_pos, mark_pos)
+
+                        prev_3cm_record = arm_data.get_record_at_distance(0.03)
+                        if prev_3cm_record is None:
+                            # Use a default 10cm distance if the distance to the goal didn't exist
+                            sample_labels["goal_distance_prev_3cm"] = 0.1
+                        else:
+                            prev_3cm_pos = getGripperPosition(args.robot_model, prev_3cm_record)
+                            sample_labels["goal_distance_prev_3cm"] = getDistance(prev_3cm_pos, mark_pos)
 
                         # Now write the sample labels and frames.
                         writeSample(datawriter, sample_labels, sample_frames, rosdir.replace('/', ''),

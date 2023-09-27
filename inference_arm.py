@@ -23,7 +23,8 @@ from sensor_msgs.msg import (Image, JointState)
 # Includes from this project
 from arm_utility import (ArmReplay, getCalibrationDiff)
 from data_utility import vidSamplingCommonCrop
-from bee_analysis.utility.model_utility import (createModel, restoreModel)
+from bee_analysis.utility.model_utility import (createModel, hasNormalizers, restoreModel,
+        restoreNormalizers)
 
 
 # Terminate inference when the user kills the program
@@ -168,6 +169,10 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
     # Create the model and load the weights from the given checkpoint.
     net = createModel(**dnn_args)
     restoreModel(model_checkpoint, net)
+    # Restore the denormalization network, if it was used.
+    if hasNormalizers(model_checkpoint):
+        _, denormalizer = restoreNormalizers(model_checkpoint)
+        denormalizer.eval().cuda()
     net = net.eval().cuda()
     print("Network is {}".format(net))
 
@@ -186,15 +191,26 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
     goal_idx = 0
     vector_input_locations = {}
     out_idx = 0
+    # History goal distance is initialized to 10cm
+    prev_goal_distance = 0.1
     for input_name in vector_inputs:
         # Vector inputs are size 1 unless they are the current robot position
         if input_name == 'current_position':
-            # TODO FIXME Whoops, looks like training used all of the joints
+            # This uses all joints. 'current_arm_position' has only the arm ones
             vector_input_locations[input_name] = slice(out_idx, out_idx + len(robot_joint_names) + 3)
             out_idx += len(robot_joint_names) + 3
+        elif input_name == 'current_arm_position':
+            vector_input_locations[input_name] = slice(out_idx, out_idx + len(robot_joint_names))
+            out_idx += len(robot_joint_names)
         elif input_name == 'goal_mark':
             vector_input_locations[input_name] = out_idx
             out_idx += 1
+        elif input_name[:len("goal_distance_prev_")] == "goal_distance_prev_":
+            vector_input_locations[input_name] = out_idx
+            out_idx += 1
+            # TODO We will assume that the prediction_distance and the previous goal distance are
+            # the same, so we only need to buffer a single previous goal distance prediction.
+            goal_distance_history = int(input_name[len("goal_distance_prev_"):-2])
         else:
             Exception("Unknown vector input: {}".format(input_name))
 
@@ -206,6 +222,9 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
     out_idx = 0
     for output_name in dnn_outputs:
         if output_name == 'target_position':
+            output_locations[output_name] = slice(out_idx, out_idx+len(robot_joint_names) + 3)
+            out_idx += len(robot_joint_names) + 3
+        elif output_name == 'target_arm_position':
             output_locations[output_name] = slice(out_idx, out_idx+len(robot_joint_names))
             out_idx += len(robot_joint_names)
         else:
@@ -239,19 +258,31 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
             elif input_name == 'goal_mark':
                 vector_inputs[0, out_idx] = goal_sequence[goal_idx]
                 out_idx += 1
+            elif input_name[:len("goal_distance_prev_")] == "goal_distance_prev_":
+                vector_inputs[0, out_idx] = prev_goal_distance
+                out_idx += 1
 
         # goal_mark determines the state to feed back to the network via the vector inputs
         # goal_distance is used to determine when to switch goals.
         # The target_position output contains the next set of joint positions.
 
         net_out = net.forward(new_frame, vector_inputs)
-        predicted_distance = net_out[0, output_locations['goal_distance']].item()
-        next_position = net_out[0, output_locations['target_position']].tolist()
+        if denormalizer is not None:
+            net_out = denormalizer(net_out)
+        predicted_distance = 1.0
+        if 'goal_distance' in dnn_outputs:
+            net_out[0, output_locations['goal_distance']].item()
+        next_position = net_out[0, output_locations['target_arm_position']].tolist()
         print("Requesting position {}".format(next_position))
         # TODO This shouldn't be a magic variable
-        if predicted_distance < 0.01:
+        if predicted_distance < 0.005:
             goal_idx = (goal_idx + 1) % len(goal_sequence)
             print("Switching to goal {}".format(goal_sequence[goal_idx]))
+            # History goal distance is initialized to 10cm
+            prev_goal_distance = 0.1
+        else:
+            # Save the current goal distance to be used as a status input.
+            prev_goal_distance = predicted_distance
         # Extract the next position from the model outputs and send it to the robot.
         position_queue.put((next_position, update_delay_s))
         # TODO The sleep should be slightly less than the movement time to make movement appear
@@ -393,8 +424,10 @@ def main():
     for input_name in args.vector_inputs:
         # Vector inputs are size 1 unless they are the current robot position
         if input_name == 'current_position':
-            # TODO FIXME Whoops, looks like training used all of the joints
+            # Generally, current_arm_position is the correct output to use
             vector_input_size += len(bot.arm.group_info.joint_names) + 3
+        if input_name == 'current_arm_position':
+            vector_input_size += len(bot.arm.group_info.joint_names)
         else:
             vector_input_size += 1
 
@@ -402,8 +435,10 @@ def main():
     for output_name in args.dnn_outputs:
         # Outputs are size 1 unless they are the predicted robot position
         if output_name == 'target_position':
-            # TODO FIXME Whoops, looks like training used all of the joints
+            # Generally, target_arm_position is the correct output to use
             dnn_output_size += len(bot.arm.group_info.joint_names) + 3
+        elif output_name == 'target_arm_position':
+            dnn_output_size += len(bot.arm.group_info.joint_names)
         else:
             dnn_output_size += 1
 

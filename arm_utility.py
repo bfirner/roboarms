@@ -2,15 +2,17 @@
 # joint states, such as from a rosbag.
 
 
-import yaml
+import math
+import modern_robotics
 import rclpy
+import yaml
 
 from interbotix_common_modules.angle_manipulation import angle_manipulation as ang
 from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
 
 
 def getGripperPosition(robot_model, arm_record):
-    """Get the x,y,z position of the gripper relative to the waist.
+    """Get the x,y,z position of the gripper relative to the point under the waist in meters.
 
     This is basically the same as the get_ee_pose function for an interbotix arm, but takes in an
     arbitrary set of joint states. Like that function, this just calls something from the
@@ -23,24 +25,49 @@ def getGripperPosition(robot_model, arm_record):
         robot_model      (class): String that identifies this robot arm in the interbotix modules.
         arm_record ({str: data}): ROS message data for the robot arm.
     Returns:
-        x,y,z tuple of the gripper location.
+        x,y,z tuple of the gripper location, in meters
     """
-    # TODO Since a mini-goal of this project is to handle actuation without calibration we won't be
-    # using this for labels (because it would require calibration for the x,y,z location of the
-    # gripper to be meaningful), but will be using this to determine the moved distance of the
-    # gripper, and from that we will determine the next pose to predict.
-    # The arm joints are separate from the gripper, which is represented by three "joints" even
-    # though it is a single motor.
-    gripper_names = ["gripper", "left_finger", "right_finger"]
-    names = [name for name in arm_record['name'] if name not in gripper_names]
-    joint_positions = [
-        arm_record['position'][names.index(name)] for name in names
-    ]
-    # 'M' is the home configuration of the robot, Slist has the joint screw axes at the home
-    # position
-    T = modern_robotics.FKinSpace(robot_model.M, robot_model.Slist, joint_positions)
-    # Return the x,y,z components of the translation matrix.
-    return (T[0][-1], T[1][-1], T[2][-2])
+    # TODO These are specific values for the px150 Interbotix robot arm. They should be
+    # placed into a library.
+    # TODO FIXME These should be calibrated to a known 0 position or the distances will be
+    # slightly off (or extremely off, depending upon the calibration).
+    # The four joint positions that influence end effector position
+    assert "px150" == robot_model
+    theta0 = arm_record['position'][arm_record['name'].index('waist')]
+    theta1 = arm_record['position'][arm_record['name'].index('shoulder')]
+    theta2 = arm_record['position'][arm_record['name'].index('elbow')]
+    theta3 = arm_record['position'][arm_record['name'].index('wrist_angle')]
+    # The lengths of segments (or effective segments) that are moved by the previous joints,
+    # in mm
+    segment_G = 104    # Height of the pedestal upon which theta1 rotates
+    segment_C = 158    # Effective length from theta1 to theta2
+    segment_D = 150    # Length from theta2 to theta3
+    segment_H = 170    # Length of the grasper from theta4
+    arm_x = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.cos(theta0)
+    arm_y = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.sin(theta0)
+    arm_z = segment_G + math.cos(-theta1)*segment_C + math.sin(-theta1 - theta2)*segment_D + math.sin(-theta1 - theta2 - theta3)*segment_H
+    # Return the x,y,z end effector coordinates in meters
+    return (arm_x/1000., arm_y/1000., arm_z/1000.)
+
+    # Below is "correct" but gets incorrect results. Instead we will use geometry and hand-measured
+    # values for the arm segments. There must be something wrong in the M or Slist matrices
+    # (probably the Slist) but the problem isn't immediately apparent.
+    # # TODO Since a mini-goal of this project is to handle actuation without calibration we won't be
+    # # using this for labels (because it would require calibration for the x,y,z location of the
+    # # gripper to be meaningful), but will be using this to determine the moved distance of the
+    # # gripper, and from that we will determine the next pose to predict.
+    # # The arm joints are separate from the gripper, which is represented by three "joints" even
+    # # though it is a single motor.
+    # gripper_names = ["wrist_rotate", "gripper", "left_finger", "right_finger"]
+    # names = [name for name in arm_record['name'] if name not in gripper_names]
+    # joint_positions = [
+    #     arm_record['position'][names.index(name)] for name in names
+    # ]
+    # # 'M' is the home configuration of the robot, Slist has the joint screw axes at the home
+    # # position. This should return the end effector position.
+    # T = modern_robotics.FKinSpace(robot_model.M, robot_model.Slist, joint_positions)
+    # # Return the x,y,z components of the translation matrix.
+    # return (T[0][-1], T[1][-1], T[2][-2])
 
 
 def getDistance(record_a, record_b):

@@ -19,6 +19,8 @@ import sys
 import yaml
 
 from arm_utility import (getDistance, getGripperPosition)
+# These are the robot descriptions to match function calls in the modern robotics package.
+from interbotix_xs_modules.xs_robot import mr_descriptions as mrd
 from nml_bag import Reader
 # For annotation drawing
 from PIL import ImageDraw, ImageFont, ImageOps
@@ -36,6 +38,24 @@ arrow_up    = 82
 arrow_right = 83
 arrow_down  = 84
 
+def findRecord(arm_records, start_idx, desired_timestamp):
+    """Find the index of the first record that occurs after the desired timestamp."""
+    # First go backwards to find the first record that occurs before the timestamp, then go forwards
+    # to find the first record after the given timestamp.
+    # This will work even if the provided start_idx is nowhere close to the correct position but
+    # will be much faster if it is.
+    cur_record = start_idx
+    while (0 <= cur_record and arm_records[cur_record]['timestamp'] > desired_timestamp):
+        cur_record -= 1
+    while (cur_record < len(arm_records) and arm_records[cur_record]['timestamp'] < desired_timestamp):
+        cur_record += 1
+    if cur_record >= len(arm_records):
+        print("Ran out of records to label this video.")
+        return None
+    elif cur_record < 0:
+        print("Video begins before arm records.")
+        return None
+    return cur_record
 
 def main():
     p = argparse.ArgumentParser()
@@ -49,6 +69,12 @@ def main():
              "90 frames at 1920x1024 with 3 bytes per pixel is around 500MB.")
     # Path to the label file.
     p.add_argument('--label_file', default=None)
+    p.add_argument(
+        '--robot_model',
+        type=str,
+        required=False,
+        default="px150",
+        help='The name of the interbotix robot model.')
 
     args = p.parse_args()
 
@@ -83,6 +109,11 @@ def main():
         print("Too many (expecing 1) db files found in {}".format(args.bag_path))
         return
     vid_path = vid_paths[0]
+
+    # Load the robot model, which will be used in later distance calculations
+    # Model descriptions are installed to a path like /root/interbotix_ws/install/interbotix_xs_modules/lib/python3.10/site-packages/interbotix_xs_modules/xs_robot/mr_descriptions.py
+    model_generator = getattr(mrd, args.robot_model)
+    robot_model = model_generator()
 
     ################
     # Data loading
@@ -205,7 +236,7 @@ def main():
         # Print some stuff for the UI:
         y = int(height * 0.8)
         x = int(width * 0.1)
-        color = (1.0, 1.0, 1.0)
+        color = (1.0, 0.3, 0.3)
         thickness = 3.0
         # Cur frame message
         frame_str = "Frame: {}".format(cur_frame)
@@ -226,35 +257,51 @@ def main():
             mark_str = "Current mark: {}".format(labels['mark'][cur_frame+next_frame])
             cv2.putText(img=np_frame, text=mark_str, org=(x, y),
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=6)
-        # TODO Search for a previous mark, find the distance to it from the current state, and
-        # display the distance.
+
+        # Get the current timestamp
+        # TODO interpolate to find the position, velocity, and effort values that correspond to it.
+        cur_time = video_timestamps[cur_frame + next_frame]
+
+        cur_record = findRecord(arm_records, cur_record, cur_time)
+        # TODO cur_record is the first record after `cur_time`.
+        # Data would be more correct if we interpolate this arm record and the previous record to
+        # get the sensor values that correspond to the current frame.
+
+        # We can't continue labelling if there is no more data.
+        if cur_record is None:
+            return
+
+        # Search for a previous mark, find the distance to it from the current state, and display
+        # the distance.
+        # Find the first mark in list(reversed(labels['mark'][0:cur_frame+next_frame]))
+        previous_mark = None
+        mark_time = None
+
+        for offset, mark in enumerate(reversed(labels['mark'][:cur_frame+next_frame])):
+            if mark is not None:
+                previous_mark = mark
+                mark_time = video_timestamps[cur_frame+next_frame-offset]
+                break
+
+        if previous_mark is not None:
+            cur_position = getGripperPosition(args.robot_model, arm_records[cur_record])
+            mark_record = findRecord(arm_records, cur_record, mark_time)
+            mark_position = getGripperPosition(args.robot_model, arm_records[mark_record])
+            mark_distance = getDistance(mark_position, cur_position)
+            x = int(width * 0.5)
+            y = int(height * 0.99)
+            label_str = "Distance from {} is {}m".format(previous_mark, round(mark_distance, 3))
+            cv2.putText(img=np_frame, text=label_str, org=(x, y),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=color, thickness=6)
+            #print("joint names {}".format(arm_records[cur_record]['name']))
+            #print("m: {}".format(robot_model.M))
+            #print("slist: {}".format(robot_model.Slist))
+            #print("joint positions: {}".format(arm_records[cur_record]['position']))
+            #print("mark position: {}".format(mark_position))
+            #print("cur position: {}".format(cur_position))
 
         # Display the frame.
         cv2.imshow("arm video", np_frame)
-
-        # Get the current timestamp and then interpolate to find the position, velocity, and effort
-        # values that correspond to it.
-        cur_time = video_timestamps[cur_frame + next_frame]
-
-        # arm_records has values for the position, velocity, and effort keys
-        # Time is in the time field
-        # Find the first record with a timestamp greater than the image time
-        # print("record is {}".format(arm_records[cur_record]))
-        while (0 <= cur_record and arm_records[cur_record]['timestamp'] > cur_time):
-            cur_record -= 1
-        while (cur_record < len(arm_records) and arm_records[cur_record]['timestamp'] < cur_time):
-            cur_record += 1
-        if cur_record >= len(arm_records):
-            print("Ran out of records to label this video.")
-            return
-        elif cur_record < 0:
-            print("Video begins before arm records.")
-            return
-        else:
-            # Interpolate this arm record and the previous record to get the sensor values that
-            # correspond to the current frame.
-            # TODO
-            pass
 
         # Keep processing user input until they change the frame or want to exit the program.
         action = False

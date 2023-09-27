@@ -8,6 +8,7 @@ import math
 import os
 import yaml
 
+from arm_utility import (getDistance, getGripperPosition)
 from nml_bag import Reader
 
 
@@ -106,11 +107,12 @@ def readArmRecords(bag_path, arm_topic):
     # this:
     # {'topic': '/arm2/joint_states', 'time_ns': 1689788069723452912, 'type': 'sensor_msgs/msg/JointState', 'header': OrderedDict([('stamp', OrderedDict([('sec', 1689788069), ('nanosec', 723357753)])), ('frame_id', '')]), 'name': ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate', 'gripper', 'left_finger', 'right_finger'], 'position': [0.015339808538556099, -1.7180585861206055, 1.7226604223251343, -1.7548741102218628, -0.023009711876511574, -0.5875146389007568, 0.013221289031207561, -0.013221289031207561], 'velocity': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 'effort': [0.0, 0.0, 0.0, 5.380000114440918, -2.690000057220459, 0.0, 0.0, 0.0]}
     arm_records = []
+    last_position = None
     for record in reader:
         if record['topic'] == arm_topic:
             time_sec = int(record['header']['stamp']['sec'])
             time_ns = int(record['header']['stamp']['nanosec'])
-            # TODO FIXME Correct the positions using the calibration values for this arm
+            # TODO FIXME Correct the joint positions using the calibration values for this arm
             data = {
                 'timestamp': time_sec * 10**9 + time_ns,
                 'name': record['name'],
@@ -118,6 +120,19 @@ def readArmRecords(bag_path, arm_topic):
                 'velocity': [float(value) for value in record['velocity']],
                 'effort': [float(value) for value in record['effort']],
             }
+            # Find the total end effector distance travelled to reach this record
+            # TODO The robot model is being hard-coded here, but could be read from a message or
+            # from an argument to this function
+            new_position = getGripperPosition('px150', data)
+            if last_position is None:
+                distance = 0
+                last_position = new_position
+            else:
+                distance = getDistance(last_position, new_position)
+                last_position = new_position
+            data['total_distance'] = distance
+
+            # Add the new record for this arm topic message
             arm_records.append(data)
     return arm_records
 
@@ -214,8 +229,37 @@ class ArmDataInterpolator:
         """Return the last timestamp in the data."""
         return self.records[-1]['timestamp']
 
+    def get_record_at_distance(self, desired_distance):
+        """Fetch the first record beyond the provided distance, in meters.
+
+        Both positive and negative distances can be provided, the record returned will be the first
+        record farther from 0 than the provided distance.
+        """
+        if desired_distance == 0:
+            return self.next_record()
+
+        if 0 < desired_distance:
+            # Search forward
+            ref_distance = self.next_record()['total_distance']
+            for record in self.future_records()[1:]:
+                if (record['total_distance'] - ref_distance) > desired_distance:
+                    return record
+            # If no such record was found then return None.
+            return None
+
+        if 0 > desired_distance:
+            # Search backwards
+            ref_distance = self.next_record()['total_distance']
+            for record in reversed(self.records[:self.last_idx]):
+                if (ref_distance - record['total_distance']) > desired_distance:
+                    return record
+            # If no such record was found then return None.
+            return None
+
     def interpolate(self, timestamp):
         """Interpolate arm data to match the given video timestamp.
+
+        This function will adjust the last_idx variable.
 
         Arguments:
             timestamp           (int): The ros timestamp (in ns)
