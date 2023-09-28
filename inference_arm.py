@@ -5,6 +5,7 @@
 
 
 import argparse
+import cv2
 import ffmpeg
 import numpy
 import pathlib
@@ -104,7 +105,7 @@ class RosHandler(Node):
             if self.channels_per_frame == 1:
                 self.input_stream = (self.input_stream
                     # Output to another pipe so that the data can be read back in
-                    .output('pipe:', format='rawvideo', pix_fmt='rgb8')
+                    .output('pipe:', format='rawvideo', pix_fmt='gray')
                     .run_async(pipe_stdin=True, pipe_stdout=True, quiet=True)
                 )
             else:
@@ -120,10 +121,17 @@ class RosHandler(Node):
         # Reshape the frame and put the channels before the other dimensions
         np_frame = numpy.frombuffer(crop_bytes, numpy.uint8).reshape([1, self.crop_height, self.crop_width,
             self.channels_per_frame])
+
+        # Display the cropped image that will be used for inference
+        cv2.imshow("inference patch", np_frame[0])
+        # waitKey must be called for open CV to actually display the frame.
+        cv2.waitKey(1)
+
         # TODO The exact frame preprocessing must match what was done in dataprep, but currently the
         # image formats are different (e.g. in dataprep images are saved as pngs whereas here they
         # are coming directly from the video)
-        out_img = torch.tensor(data=np_frame, dtype=torch.uint8).permute(0, 3, 1, 2) / 255.0
+        out_img = torch.tensor(
+            data=np_frame, dtype=torch.uint8).permute(0, 3, 1, 2).to(dtype=torch.float) / 255.0
 
         # TODO Check frames_per_sample.
         # TODO Check channel_per_sample
@@ -147,6 +155,11 @@ class RosHandler(Node):
             self.position = msg.position
             self.velocity = msg.velocity
             self.effort = msg.effort
+
+    def __del__(self):
+        # Remove the patch display window
+        cv2.destroyAllWindows()
+        super(RosHandler, self).__del__()
 
 
 def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dnn_args, dnn_outputs,
@@ -244,8 +257,10 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
         # frame rate the only thing that will update between commands is the robot's current
         # position.
         with data_read_lock:
-            new_frame = image_processor.frame.float().cuda()
+            new_frame = image_processor.frame.float()
             joint_positions = image_processor.position
+
+        new_frame = new_frame.cuda()
 
         # Set up vector inputs
         out_idx = 0
@@ -253,6 +268,9 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
             # Vector inputs are size 1 unless they are the current robot position
             vector_input_locations[input_name] = out_idx
             if input_name == 'current_position':
+                vector_inputs[0, out_idx:out_idx+len(robot_joint_names)].copy_(torch.tensor(joint_positions))
+                out_idx += len(robot_joint_names)
+            elif input_name == 'current_arm_position':
                 vector_inputs[0, out_idx:out_idx+len(robot_joint_names)].copy_(torch.tensor(joint_positions))
                 out_idx += len(robot_joint_names)
             elif input_name == 'goal_mark':
@@ -448,9 +466,8 @@ def main():
         'in_channels': args.out_channels*args.frames_per_sample,
         'frame_height': args.height,
         'frame_width': args.width,
-        'vector_input_size': vector_input_size,
         'output_size': dnn_output_size,
-        'other_args': {'skip_last_relu': True}
+        'other_args': {'vector_input_size': vector_input_size, 'skip_last_relu': True, 'linear_size': 512, 'expanded_linear': True}
     }
 
     # Arguments for RosHandler constructor

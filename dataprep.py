@@ -6,7 +6,6 @@
 
 import argparse
 import csv
-import cv2
 import ffmpeg
 import io
 import itertools
