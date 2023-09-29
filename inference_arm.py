@@ -102,18 +102,15 @@ class RosHandler(Node):
                     x=self.post_scale_crop_x, y=self.post_scale_crop_y)
                 .filter('normalize', independence=1.0)
             )
-            if self.channels_per_frame == 1:
-                self.input_stream = (self.input_stream
-                    # Output to another pipe so that the data can be read back in
-                    .output('pipe:', format='rawvideo', pix_fmt='gray')
-                    .run_async(pipe_stdin=True, pipe_stdout=True, quiet=True)
-                )
+            if 3 == self.channels_per_frame:
+                pix_fmt='rgb24'
             else:
-                self.input_stream = (self.input_stream
-                    # Output to another pipe so that the data can be read back in
-                    .output('pipe:', format='rawvideo', pix_fmt='rgb24')
-                    .run_async(pipe_stdin=True, pipe_stdout=True, quiet=True)
-                )
+                pix_fmt='gray'
+            self.input_stream = (self.input_stream
+                # Output to another pipe so that the data can be read back in
+                .output('pipe:', format='rawvideo', pix_fmt=pix_fmt)
+                .run_async(pipe_stdin=True, pipe_stdout=True, quiet=True)
+            )
 
         # Process the frame
         self.input_stream.stdin.write(numpy.uint8(msg.data).tobytes())
@@ -163,7 +160,7 @@ class RosHandler(Node):
 
 
 def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dnn_args, dnn_outputs,
-        vector_inputs, goal_sequence, video_args, update_delay_s, exit_event):
+        vector_inputs, goal_sequence, video_args, normalize_video, update_delay_s, exit_event):
     """Puts positions into the position queue.
 
     Arguments:
@@ -174,6 +171,7 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
         vector_inputs     (list[str]): Names of the DNN vector inputs
         goal_sequence     (list[int]): Sequence of goals
         video_args             (dict): Video arguments
+        normalize_video        (bool): Normalize frames: frame = (frame - mean)/stddev
         update_delay_s    (float): Update delay in seconds
         exit_event        (Event): Exit when is_set is True.
     """
@@ -261,6 +259,10 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
             joint_positions = image_processor.position
 
         new_frame = new_frame.cuda()
+        # Normalize inputs: input = (input - mean)/stddev
+        if normalize_video:
+            v, m = torch.var_mean(new_frame)
+            new_frame = (new_frame - m) / v
 
         # Set up vector inputs
         out_idx = 0
@@ -424,6 +426,13 @@ def main():
         type=int,
         default=30,
         help="Commands per second. It is possible that inference may not achieve this rate..")
+    parser.add_argument(
+        '--normalize_video',
+        required=False,
+        default=False,
+        action="store_true",
+        help=("Normalize video: input = (input - mean) / stddev. "
+            "Some normalization is already done through ffmpeg, but png and jpeg differences could be fixed with this."))
 
     # Parse the arguments
     args = parser.parse_args(sys.argv[1:])
@@ -467,7 +476,8 @@ def main():
         'frame_height': args.height,
         'frame_width': args.width,
         'output_size': dnn_output_size,
-        'other_args': {'vector_input_size': vector_input_size, 'skip_last_relu': True, 'linear_size': 512, 'expanded_linear': True}
+        'other_args': {'vector_input_size': vector_input_size}
+        #'other_args': {'vector_input_size': vector_input_size, 'skip_last_relu': True, 'linear_size': 512, 'expanded_linear': True}
     }
 
     # Arguments for RosHandler constructor
@@ -486,7 +496,7 @@ def main():
     # Start the DNN inference thread before calling the blocking start_robot() call.
     inferencer = Thread(target=dnn_inference_thread, args=(bot.arm.group_info.joint_names,
         bot.position_commands, args.model_checkpoint, model_args, args.dnn_outputs,
-        args.vector_inputs, args.goal_sequence, video_args, (1. / args.cps), exit_event)).start()
+        args.vector_inputs, args.goal_sequence, video_args, args.normalize_video, (1. / args.cps), exit_event)).start()
 
     # This will block until interrupted
     bot.start_robot()
