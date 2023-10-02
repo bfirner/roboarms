@@ -304,17 +304,19 @@ class ArmDataInterpolator:
         before_time = before_state['timestamp']
         after_time = after_state['timestamp']
         delta = (timestamp - before_time) / (after_time - before_time)
+        total_distance = before_state['total_distance'] + (after_state['total_distance'] - before_state['total_distance'])*delta
 
         # Assemble a new record
         new_record = {
             'timestamp': timestamp,
-            'name': before_state['name']
+            'name': before_state['name'],
+            'total_distance': total_distance
         }
 
         # Interpolate data from each of the robot records
         for dataname in ['position', 'velocity', 'effort']:
-            new_record['position'] = [data[0] + (data[1]-data[0])*delta for data in
-                zip(before_state['position'], after_state['position'])]
+            new_record[dataname] = [data[0] + (data[1]-data[0])*delta for data in
+                zip(before_state[dataname], after_state[dataname])]
 
         # Return the assembled record
         return new_record

@@ -184,6 +184,8 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
     if hasNormalizers(model_checkpoint):
         _, denormalizer = restoreNormalizers(model_checkpoint)
         denormalizer.eval().cuda()
+    else:
+        denormalizer = None
     net = net.eval().cuda()
     print("Network is {}".format(net))
 

@@ -75,7 +75,8 @@ def getDistance(record_a, record_b):
     return math.sqrt(sum([(a-b)**2 for a, b in zip(record_a, record_b)]))
 
 
-def getStateAtNextPosition(reference_record, arm_records, movement_distance, robot_model):
+def getStateAtNextPosition(reference_record, arm_records, movement_distance, robot_model,
+        use_path_distance=False):
     """Get the arm state after the end affector moves the given distance
 
     Arguments:
@@ -83,6 +84,8 @@ def getStateAtNextPosition(reference_record, arm_records, movement_distance, rob
         arm_records (list[{str: data}]): ROS data for the robot arm. Search begins at index 0.
         movement_distance (float): Distance in meters desired from the reference position.
         robot_model      (class): String that identifies this robot arm in the interbotix modules.
+        use_path_distance (bool): If True, count distance along the path rather than from the
+                                  reference record.
     Returns:
         tuple({str: data}, int): The arm record at the desired distance, or None if the records end
                                  before reaching the desired distance. Also returns the index of
@@ -93,12 +96,19 @@ def getStateAtNextPosition(reference_record, arm_records, movement_distance, rob
     distance = 0
     idx = 0
     next_record = None
+    print("reference record is {}".format(reference_record))
+    prev_path_distance = reference_record['total_distance']
+    path_distance = 0
+
     # Search for the first record with the desired distance
-    while idx < len(arm_records) and distance < movement_distance:
+    while (idx < len(arm_records) and (not use_path_distance and distance < movement_distance) or
+           (use_path_distance and distance < path_distance)):
         next_record = arm_records[idx]
         next_position = getGripperPosition(robot_model, next_record)
         # Find the Euclidean distance from the reference position to the current position
         distance = getDistance(reference_position, next_position)
+        path_distance += (next_record['total_distance'] - prev_path_distance)
+        prev_path_distance = next_record['total_distance']
         idx += 1
 
     # If we ended up past the end of the records then they don't have anything at the desired
