@@ -24,6 +24,13 @@ from sensor_msgs.msg import (Image, JointState)
 # Includes from this project
 from arm_utility import (ArmReplay, getCalibrationDiff)
 from data_utility import vidSamplingCommonCrop
+
+
+# Insert the bee analysis repository into the path so that the python modules of the git submodule
+# can be used properly.
+import sys
+sys.path.append('bee_analysis')
+
 from bee_analysis.utility.model_utility import (createModel, hasNormalizers, restoreModel,
         restoreNormalizers)
 
@@ -187,7 +194,6 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
     else:
         denormalizer = None
     net = net.eval().cuda()
-    print("Network is {}".format(net))
 
     # Initialize ROS2 nodes
     #rclpy.init()
