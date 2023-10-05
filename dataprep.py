@@ -270,50 +270,56 @@ def main():
 
             # Fetch the arm data for the latest of the frames (or the only frame if there is
             # only a single frame per sample)
-            first_frame = int(frame_nums[0])
-            last_frame = int(frame_nums[-1])
-            if video_timestamps[last_frame] <= arm_data.last_time():
-                current_data = arm_data.interpolate(video_timestamps[last_frame])
-                # TODO Also fetch history? Option on the command line?
+            current_frame = int(frame_nums[-1])
+            if (labels['behavior'][current_frame] == 'keep' and
+                video_timestamps[current_frame] <= arm_data.last_time()):
+                # TODO FIXME Verify the timestamps of the records being used for interpolation
+                current_data = arm_data.interpolate(video_timestamps[current_frame])
                 # Fetch the next state after some end effector movement distance to be the prediction
                 # target
+                # TODO FIXME This uses the end effector distance, which can lead to some weird
+                # behavior in the presence of tight curves. Would it be better to use total distance
+                # moved instead? Would that require smoothing the input data to remove human jitter
+                # as a preprocessing step?
+                # The path distance should be used if we are attempting to reconstruct the path
+                # exactly rather than moving to the target location.
                 next_state, next_state_offset = getStateAtNextPosition(current_data, arm_data.future_records(),
-                        args.prediction_distance, args.robot_model)
+                        args.prediction_distance, args.robot_model, use_path_distance=False)
             else:
                 # If the video is longer than the ros records (which isn't an error, they could have
                 # been stopped in any order) then there is no 'next state'.
                 next_state = None
 
             if next_state is not None:
-                # Find the frame number that corresponds to that next_state
+                # Find earliest frame number that corresponds to that next_state desired state.
                 # If this sequence attempts to go through a 'mark' label, stop the next state at that
                 # position instead of the one at the requested movement distance. This allows for a
                 # clear separation between actions, ensuring that the robot will fully complete an
                 # action by moving all the way into the desired position before moving on to the next
                 # action.
-                last_frame += 1
-                while (last_frame < len(video_timestamps) and
-                        labels['mark'][last_frame] is not None and
-                        video_timestamps[last_frame] < next_state['timestamp']):
-                    last_frame += 1
+                next_frame = current_frame + 1
+                while (next_frame < len(video_timestamps) and
+                        labels['mark'][next_frame] is None and
+                        video_timestamps[next_frame] < next_state['timestamp']):
+                    next_frame += 1
 
                 # If we exited the previous loop because we encountered a new mark before reaching
                 # the timestamp of the next state (determined by distance) then we need to set a new
                 # next state at the frame before that mark. Walk forward from the current data to
                 # the time of the transition
-                if labels['mark'][last_frame] is not None:
-                    last_frame -= 1
-                    while arm_data.records[next_state_offset]['timestamp'] > video_timestamps[last_frame]:
+                if labels['mark'][next_frame] is not None:
+                    while next_state_offset > 0 and arm_data.future_records()[next_state_offset]['timestamp'] > video_timestamps[next_frame]:
                         next_state_offset -= 1
-                    next_state = arm_data.records[next_state_offset]
+                    next_state = arm_data.future_records()[next_state_offset]
 
                 # Verify that this data should be used
                 # Check from the past frames to the frame at the target position in the future
-                frame_range = list(range(first_frame, last_frame+1))
+                frame_range = list(range(current_frame, next_frame+1))
                 any_discards = any([labels['behavior'][frame_num] == "discard" for frame_num in frame_range])
                 any_nones = any([labels['behavior'][frame_num] == None for frame_num in frame_range])
 
-                if not any_discards and not any_nones:
+                #if not any_discards and not any_nones:
+                if labels['behavior'][current_frame] == 'keep' and labels['behavior'][next_frame] == 'keep':
                     # Combine the target labels and the current state into a single table for this
                     # sample.
                     sample_labels = {}
@@ -359,7 +365,7 @@ def main():
                         # The goal mark is the one currently being moved towards
                         sample_labels["goal_mark"] = cur_mark
                         # Get the distance to the next mark
-                        cur_pos = getGripperPosition(args.robot_model, arm_data.next_record())
+                        cur_pos = getGripperPosition(args.robot_model, current_data)
                         mark_record = arm_data.future_records()[marks_until_transition]
                         mark_pos = getGripperPosition(args.robot_model, mark_record)
                         sample_labels["goal_distance"] = getDistance(cur_pos, mark_pos)
