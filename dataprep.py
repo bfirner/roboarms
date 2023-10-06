@@ -284,7 +284,7 @@ def main():
                 # The path distance should be used if we are attempting to reconstruct the path
                 # exactly rather than moving to the target location.
                 next_state, next_state_offset = getStateAtNextPosition(current_data, arm_data.future_records(),
-                        args.prediction_distance, args.robot_model, use_path_distance=False)
+                        args.prediction_distance, args.robot_model, use_path_distance=True)
             else:
                 # If the video is longer than the ros records (which isn't an error, they could have
                 # been stopped in any order) then there is no 'next state'.
