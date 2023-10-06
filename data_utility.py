@@ -128,7 +128,7 @@ def readArmRecords(bag_path, arm_topic):
                 distance = 0
                 last_position = new_position
             else:
-                distance = getDistance(last_position, new_position)
+                distance += getDistance(last_position, new_position)
                 last_position = new_position
             data['total_distance'] = distance
 
