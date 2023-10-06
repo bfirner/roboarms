@@ -220,17 +220,19 @@ def lossWithDistance(output, labels, loss_fn, joint_range):
     if 'MSELoss' == args.loss_fun:
         distance_error = distance_error.pow(2)
 
+    loss = distance_error.sum() + loss_fn(output, labels)
+
     # If there are labels before or after the joint positions then add them into the loss along with
     # the distance error
     loss = distance_error
-    if 0 < joint_range.start:
-        before_output = output[:, 0:joint_range.start]
-        before_labels = labels[:, 0:joint_range.start]
-        loss = torch.cat((loss, loss_fn(before_output, before_labels)))
-    if joint_range.stop < labels.size(1):
-        after_output = output[:, joint_range.stop:]
-        after_labels = labels[:, joint_range.stop:]
-        loss = torch.cat((loss, loss_fn(after_output, after_labels)))
+    #if 0 < joint_range.start:
+    #    before_output = output[:, 0:joint_range.start]
+    #    before_labels = labels[:, 0:joint_range.start]
+    #    loss = torch.cat((loss, loss_fn(before_output, before_labels)))
+    #if joint_range.stop < labels.size(1):
+    #    after_output = output[:, joint_range.stop:]
+    #    after_labels = labels[:, joint_range.stop:]
+    #    loss = torch.cat((loss, loss_fn(after_output, after_labels)))
     return torch.sum(loss)
 
 
