@@ -5,6 +5,7 @@
 import math
 import modern_robotics
 import rclpy
+import torch
 import yaml
 
 from interbotix_common_modules.angle_manipulation import angle_manipulation as ang
@@ -73,6 +74,37 @@ def getGripperPosition(robot_model, arm_record):
 def getDistance(record_a, record_b):
     """Return the Euclidean distance of the manipulator in record a and record b"""
     return math.sqrt(sum([(a-b)**2 for a, b in zip(record_a, record_b)]))
+
+
+def grepGripperLocationFromTensors(positions):
+    """Get the x,y,z locations from a 4-value tensors. A batch dimension is assumed
+
+    Works for the px150 robot arm.
+
+    Arguments:
+        positions      (List[float]): Positions of the joints
+    Returns:
+        x,y,z tuple of the gripper location, in meters
+    """
+    # TODO These are specific values for the px150 Interbotix robot arm. They should be
+    # placed into a library.
+    theta0 = positions[:,0]
+    theta1 = positions[:,1]
+    theta2 = positions[:,2]
+    theta3 = positions[:,3]
+    # The lengths of segments (or effective segments) that are moved by the previous joints,
+    # in mm
+    segment_G = 104    # Height of the pedestal upon which theta1 rotates
+    segment_C = 158    # Effective length from theta1 to theta2
+    segment_D = 150    # Length from theta2 to theta3
+    segment_H = 170    # Length of the grasper from theta4
+    arm_x = (torch.sin(theta1)*segment_C + torch.cos(theta2 + theta1)*segment_D + torch.cos(theta3 + theta2 + theta1)*segment_H)*torch.cos(theta0)
+    arm_y = (torch.sin(theta1)*segment_C + torch.cos(theta2 + theta1)*segment_D + torch.cos(theta3 + theta2 + theta1)*segment_H)*torch.sin(theta0)
+    arm_z = segment_G + torch.cos(-theta1)*segment_C + torch.sin(-theta1 - theta2)*segment_D + torch.sin(-theta1 - theta2 - theta3)*segment_H
+    # Return the x,y,z end effector coordinates in meters. Restore the batch dimension in the return
+    # value.
+    return torch.cat(((arm_x/1000.).unsqueeze(1), (arm_y/1000.).unsqueeze(1),
+            (arm_z/1000.).unsqueeze(1)), dim=1)
 
 
 def getStateAtNextPosition(reference_record, arm_records, movement_distance, robot_model,
