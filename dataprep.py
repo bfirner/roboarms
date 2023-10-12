@@ -339,36 +339,29 @@ def main():
                         # five joints are the arm
                         if key == 'position':
                             sample_labels["current_{}".format('arm_position')] = value[0:5]
-                    # Find the mark that we are progressing towards. Use 'none' if the current mark
-                    # remains in effect through the end of the data. Use itertools.groupby to get
-                    # the transitions for each mark.
-                    # Each tuple in next_marks will be a pair of the mark itself and a list of all
-                    # of that same kay, which can be used to determine how many frames that key
-                    # remains the target.
-                    #next_marks = list(itertools.groupby(marks[(int(frame_nums[-1])):]))
-                    future_marks = marks[(int(frame_nums[-1])):]
-                    cur_mark = future_marks[0]
-                    marks_until_transition = 1
-                    while marks_until_transition < len(future_marks) and future_marks[marks_until_transition] == None:
-                        marks_until_transition += 1
-                    if marks_until_transition < len(future_marks):
-                        next_mark = future_marks[marks_until_transition]
-                    else:
-                        next_mark = None
-                    # This is the mark of the initial state for this maneuver
-                    sample_labels["initial_mark"] = cur_mark
+                    # Find the mark that we are progressing towards from this frame.
+                    future_marks = labels['mark'][(int(frame_nums[-1])):]
+                    next_mark_idx = 1
+                    next_mark = None
+                    while next_mark_idx < len(future_marks) and future_marks[next_mark_idx] == None:
+                        next_mark_idx += 1
+                    # Record the next mark if it is valid. Otherwise it will remain None
+                    if next_mark_idx < len(future_marks):
+                        next_mark = future_marks[next_mark_idx]
 
-                    # We cannot use this sample if there is no goal for the current motion or no
-                    # existing state.
+                    # This is the mark of the initial state for this maneuver
+                    sample_labels["initial_mark"] = marks[(int(frame_nums[-1]))]
+
+                    # We cannot use this sample if there is no goal for the current motion
                     # Only accept goals in our training list
-                    if cur_mark is not None and next_mark is not None and cur_mark in args.goals:
+                    if next_mark is not None and next_mark in args.goals:
                         # The goal mark is the one currently being moved towards
-                        sample_labels["goal_mark"] = cur_mark
+                        sample_labels["goal_mark"] = next_mark
                         # Get the distance to the next mark
                         cur_pos = getGripperPosition(args.robot_model, current_data)
-                        mark_record = arm_data.future_records()[marks_until_transition]
-                        mark_pos = getGripperPosition(args.robot_model, mark_record)
-                        sample_labels["goal_distance"] = getDistance(cur_pos, mark_pos)
+                        goal_record = arm_data.records[int(frame_nums[-1]) + next_mark_idx]
+                        goal_pos = getGripperPosition(args.robot_model, goal_record)
+                        sample_labels["goal_distance"] = getDistance(cur_pos, goal_pos)
 
                         # Go backwards to create several different status inputs for previous mark
                         # distances.
@@ -378,7 +371,7 @@ def main():
                             sample_labels["goal_distance_prev_1cm"] = 0.1
                         else:
                             prev_1cm_pos = getGripperPosition(args.robot_model, prev_1cm_record)
-                            sample_labels["goal_distance_prev_1cm"] = getDistance(prev_1cm_pos, mark_pos)
+                            sample_labels["goal_distance_prev_1cm"] = getDistance(prev_1cm_pos, goal_pos)
 
                         prev_2cm_record = arm_data.get_record_at_distance(0.02)
                         if prev_2cm_record is None:
@@ -386,7 +379,7 @@ def main():
                             sample_labels["goal_distance_prev_2cm"] = 0.1
                         else:
                             prev_2cm_pos = getGripperPosition(args.robot_model, prev_2cm_record)
-                            sample_labels["goal_distance_prev_2cm"] = getDistance(prev_2cm_pos, mark_pos)
+                            sample_labels["goal_distance_prev_2cm"] = getDistance(prev_2cm_pos, goal_pos)
 
                         prev_3cm_record = arm_data.get_record_at_distance(0.03)
                         if prev_3cm_record is None:
@@ -394,7 +387,7 @@ def main():
                             sample_labels["goal_distance_prev_3cm"] = 0.1
                         else:
                             prev_3cm_pos = getGripperPosition(args.robot_model, prev_3cm_record)
-                            sample_labels["goal_distance_prev_3cm"] = getDistance(prev_3cm_pos, mark_pos)
+                            sample_labels["goal_distance_prev_3cm"] = getDistance(prev_3cm_pos, goal_pos)
 
                         # Now write the sample labels and frames.
                         writeSample(datawriter, sample_labels, sample_frames, rosdir.replace('/', ''),
