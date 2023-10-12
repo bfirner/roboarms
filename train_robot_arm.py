@@ -221,10 +221,11 @@ def lossWithDistance(output, labels, loss_fn, joint_range):
         distance_error = distance_error.pow(2)
 
     loss = distance_error.sum() + loss_fn(output, labels)
+    return loss
 
     # If there are labels before or after the joint positions then add them into the loss along with
     # the distance error
-    loss = distance_error
+    #loss = distance_error
     #if 0 < joint_range.start:
     #    before_output = output[:, 0:joint_range.start]
     #    before_labels = labels[:, 0:joint_range.start]
@@ -233,7 +234,7 @@ def lossWithDistance(output, labels, loss_fn, joint_range):
     #    after_output = output[:, joint_range.stop:]
     #    after_labels = labels[:, joint_range.stop:]
     #    loss = torch.cat((loss, loss_fn(after_output, after_labels)))
-    return torch.sum(loss)
+    #return torch.sum(loss)
 
 
 print(f"Training with dataset {args.dataset}")
