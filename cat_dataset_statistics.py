@@ -47,11 +47,11 @@ def computeGripperPosition(positions):
     # in mm
     segment_G = 104    # Height of the pedestal upon which theta1 rotates
     segment_C = 158    # Effective length from theta1 to theta2
-    segment_D = 150    # Length from theta2 to theta3
-    segment_H = 170    # Length of the grasper from theta4
+    segment_D = 147    # Length from theta2 to theta3
+    segment_H = 175    # Length of the grasper from theta4
     arm_x = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.cos(theta0)
     arm_y = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.sin(theta0)
-    arm_z = segment_G + math.cos(-theta1)*segment_C + math.sin(-theta1 - theta2)*segment_D + math.sin(-theta1 - theta2 - theta3)*segment_H
+    arm_z = segment_G + math.cos(-theta1)*segment_C + math.sin(-theta1 + theta2)*segment_D + math.sin(-theta1 + theta2 - theta3)*segment_H
     # Return the x,y,z end effector coordinates in meters
     return (arm_x/1000., arm_y/1000., arm_z/1000.)
 
@@ -89,19 +89,7 @@ def main():
             .to_tuple(*decode_strs)
         )
     else:
-        # TODO If using a model, the decode strings should really come from
-        # checkpoint['metadata']['labels'] and checkpoint['metadata']['vector_inputs']
-        decode_strs = ["0.png", "current_arm_position", "target_arm_position"]
-        label_dataset = (
-            wds.WebDataset(args.dataset)
-            .decode("l")
-            .to_tuple(*decode_strs)
-        )
-    # Loop through the dataset and compile label statistics
-    label_dataloader = torch.utils.data.DataLoader(label_dataset, num_workers=0, batch_size=1)
-
-    # Check if there is model stuff to do
-    if args.model is not None:
+        # Check if there is model stuff to do
         checkpoint = torch.load(args.model)
         # Create the model and load the weights from the given checkpoint.
         # Get the model arguments from the training metadata stored in the checkpoint
@@ -115,14 +103,47 @@ def main():
             denormalizer = None
         net = net.eval().cuda()
 
+        vector_names = checkpoint['metadata']['vector_inputs']
+        labels = checkpoint['metadata']['labels']
+        decode_strs = ["0.png", *vector_names, *labels]
+
+        # The current arm position must be decoded so that it can be in the output data.
+        if 'current_arm_position' not in decode_strs:
+            decode_strs.append('current_arm_position')
+
+        label_dataset = (
+            wds.WebDataset(args.dataset)
+            .decode("l")
+            .to_tuple(*decode_strs)
+        )
+
+
+    # Loop through the dataset and compile label statistics
+    label_dataloader = torch.utils.data.DataLoader(label_dataset, num_workers=0, batch_size=1)
+
+    # Set the proper index values to use for the joint positions
+    if args.model is None:
+        cur_idx = 0
+        tar_idx = 1
+    else:
+        cur_idx = decode_strs.index("current_arm_position") - 1
+        tar_idx = decode_strs.index("target_arm_position") - 1
+        nn_joint_slice = slice(labels.index('target_arm_position'), labels.index('target_arm_position')+5)
+
     for i, data in enumerate(label_dataloader):
         if args.model is None:
             tensor_data = decodeUTF8Strings(data)
+            vector_inputs = None
         else:
             image = data[0].unsqueeze(1).cuda()
             tensor_data = decodeUTF8Strings(data[1:])
-        current = tensor_data[0][0].tolist()
-        target = tensor_data[1][0].tolist()
+            if 0 < len(vector_names):
+                vector_inputs = torch.cat(tensor_data[1:1+len(vector_names)], 1)
+            else:
+                vector_inputs = []
+
+        current = tensor_data[cur_idx][0].tolist()
+        target = tensor_data[tar_idx][0].tolist()
 
         current_position = computeGripperPosition(current)
         target_position = computeGripperPosition(target)
@@ -135,10 +156,13 @@ def main():
             if normalize_video:
                 v, m = torch.var_mean(image)
                 image = (image - m) / v
-            output = net.forward(image, tensor_data[0].cuda())
+            if 0 < len(vector_inputs):
+                output = net.forward(image, vector_inputs.cuda())
+            else:
+                output = net.forward(image)
             if denormalizer is not None:
                 output = denormalizer(output)
-            dnn_position = computeGripperPosition(output[0].tolist())
+            dnn_position = computeGripperPosition(output[0,nn_joint_slice].tolist())
             print("{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}".format(i, distance, *list(current_position), *list(target_position), *list(dnn_position)))
 
             

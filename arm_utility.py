@@ -96,11 +96,11 @@ def grepGripperLocationFromTensors(positions):
     # in mm
     segment_G = 104    # Height of the pedestal upon which theta1 rotates
     segment_C = 158    # Effective length from theta1 to theta2
-    segment_D = 150    # Length from theta2 to theta3
-    segment_H = 170    # Length of the grasper from theta4
+    segment_D = 147    # Length from theta2 to theta3
+    segment_H = 175    # Length of the grasper from theta4
     arm_x = (torch.sin(theta1)*segment_C + torch.cos(theta2 + theta1)*segment_D + torch.cos(theta3 + theta2 + theta1)*segment_H)*torch.cos(theta0)
     arm_y = (torch.sin(theta1)*segment_C + torch.cos(theta2 + theta1)*segment_D + torch.cos(theta3 + theta2 + theta1)*segment_H)*torch.sin(theta0)
-    arm_z = segment_G + torch.cos(-theta1)*segment_C + torch.sin(-theta1 - theta2)*segment_D + torch.sin(-theta1 - theta2 - theta3)*segment_H
+    arm_z = segment_G + torch.cos(-theta1)*segment_C + torch.sin(-theta1 + theta2)*segment_D + torch.sin(-theta1 + theta2 - theta3)*segment_H
     # Return the x,y,z end effector coordinates in meters. Restore the batch dimension in the return
     # value.
     return torch.cat(((arm_x/1000.).unsqueeze(1), (arm_y/1000.).unsqueeze(1),
