@@ -271,7 +271,8 @@ def main():
             # Fetch the arm data for the latest of the frames (or the only frame if there is
             # only a single frame per sample)
             current_frame = int(frame_nums[-1])
-            if (labels['behavior'][current_frame] == 'keep' and
+            if (current_frame < len(labels['behavior']) and
+                labels['behavior'][current_frame] == 'keep' and
                 video_timestamps[current_frame] <= arm_data.last_time()):
                 # TODO FIXME Verify the timestamps of the records being used for interpolation
                 current_data = arm_data.interpolate(video_timestamps[current_frame])
@@ -388,6 +389,11 @@ def main():
                         else:
                             prev_3cm_pos = getGripperPosition(args.robot_model, prev_3cm_record)
                             sample_labels["goal_distance_prev_3cm"] = getDistance(prev_3cm_pos, goal_pos)
+
+                        sample_labels['metadata_cur_frame'] = current_frame
+                        sample_labels['metadata_next_frame'] = next_frame
+                        sample_labels['metadata_cur_frame_time'] = video_timestamps[current_frame]
+                        sample_labels['metadata_next_frame_time'] = video_timestamps[next_frame]
 
                         # Now write the sample labels and frames.
                         writeSample(datawriter, sample_labels, sample_frames, rosdir.replace('/', ''),
