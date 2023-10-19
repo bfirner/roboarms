@@ -4,10 +4,6 @@ Open a webdataset file and print out the distances from the current_position and
 each entry.
 """
 
-import modern_robotics
-# These are the robot descriptions to match function calls in the modern robotics package.
-from interbotix_xs_modules.xs_robot import mr_descriptions as mrd
-
 import argparse
 import math
 import torch
@@ -41,7 +37,7 @@ def main():
     args = parser.parse_args()
 
     if args.model is None:
-        decode_strs = ["current_arm_position", "target_arm_position"]
+        decode_strs = ["current_arm_position", "target_arm_position", "current_xyz_position", "target_xyz_position"]
         label_dataset = (
             wds.WebDataset(args.dataset)
             .to_tuple(*decode_strs)
@@ -92,9 +88,9 @@ def main():
     else:
         cur_idx = decode_strs.index("current_arm_position") - 1
         tar_idx = decode_strs.index("target_arm_position") - 1
-        cur_xyz_idx = decode_strs.index("current_xyz_position") - 1
-        tar_xyz_idx = decode_strs.index("target_xyz_position") - 1
         nn_joint_slice = slice(labels.index('target_arm_position'), labels.index('target_arm_position')+5)
+    cur_xyz_idx = decode_strs.index("current_xyz_position") - 1
+    tar_xyz_idx = decode_strs.index("target_xyz_position") - 1
 
     for i, data in enumerate(label_dataloader):
         if args.model is None:
@@ -117,7 +113,8 @@ def main():
         target_position = computeGripperPosition(target)
         distance = getDistance(current_position, target_position)
         if args.model is None:
-            print("{}, {}, {}, {}, {}, {}, {}, {}".format(i, distance, *list(current_position), *list(target_position)))
+            print("{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}".format(i, distance,
+                *list(current_position), *list(target_position), *current_xyz, *target_xyz))
         else:
             # Normalize inputs: input = (input - mean)/stddev
             normalize_video = True

@@ -330,7 +330,13 @@ def main():
                         # TODO This assumes a joint setup as in the Interbotix px150 where the first
                         # five joints are the arm
                         if key == 'position':
-                            sample_labels["target_arm_position"] = value[0:5]
+                            sample_labels["target_arm_position"] = [
+                                value[next_state['name'].index('waist')],
+                                value[next_state['name'].index('shoulder')],
+                                value[next_state['name'].index('elbow')],
+                                value[next_state['name'].index('wrist_angle')],
+                                value[next_state['name'].index('wrist_rotate')],
+                            ]
                     sample_labels["target_xyz_position"] = list(getGripperPosition(args.robot_model, next_state))
 
                     for key, value in current_data.items():
@@ -340,7 +346,13 @@ def main():
                         # TODO This assumes a joint setup as in the Interbotix px150 where the first
                         # five joints are the arm
                         if key == 'position':
-                            sample_labels["current_arm_position"] = value[0:5]
+                            sample_labels["current_arm_position"] = [
+                                value[current_data['name'].index('waist')],
+                                value[current_data['name'].index('shoulder')],
+                                value[current_data['name'].index('elbow')],
+                                value[current_data['name'].index('wrist_angle')],
+                                value[current_data['name'].index('wrist_rotate')],
+                            ]
                     sample_labels["current_xyz_position"] = list(getGripperPosition(args.robot_model, current_data))
 
                     # Find the mark that we are progressing towards from this frame.
