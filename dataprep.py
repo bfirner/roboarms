@@ -319,7 +319,7 @@ def main():
                 any_discards = any([labels['behavior'][frame_num] == "discard" for frame_num in frame_range])
                 any_nones = any([labels['behavior'][frame_num] == None for frame_num in frame_range])
 
-                #if not any_discards and not any_nones:
+                # Use if this frame and the target frame are both marked 'keep'
                 if labels['behavior'][current_frame] == 'keep' and labels['behavior'][next_frame] == 'keep':
                     # Combine the target labels and the current state into a single table for this
                     # sample.
@@ -331,7 +331,9 @@ def main():
                         # TODO This assumes a joint setup as in the Interbotix px150 where the first
                         # five joints are the arm
                         if key == 'position':
-                            sample_labels["target_{}".format('arm_position')] = value[0:5]
+                            sample_labels["target_arm_position"] = value[0:5]
+                    sample_labels["target_xyz_position"] = list(getGripperPosition(args.robot_model, next_state))
+
                     for key, value in current_data.items():
                         sample_labels["current_{}".format(key)] = value
                         # Expand the full list of joint positions to the arm position and gripper
@@ -339,7 +341,9 @@ def main():
                         # TODO This assumes a joint setup as in the Interbotix px150 where the first
                         # five joints are the arm
                         if key == 'position':
-                            sample_labels["current_{}".format('arm_position')] = value[0:5]
+                            sample_labels["current_arm_position"] = value[0:5]
+                    sample_labels["current_xyz_position"] = list(getGripperPosition(args.robot_model, current_data))
+
                     # Find the mark that we are progressing towards from this frame.
                     future_marks = labels['mark'][(int(frame_nums[-1])):]
                     next_mark_idx = 1
