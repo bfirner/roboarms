@@ -42,7 +42,6 @@ def writeSample(dataset, sample_labels, frames, video_source, frame_nums):
         None
     """
     frame_count = len(frames)
-    channels = frames[0].size(1)
     # Convert the images to pngs
     buffers = []
     for frame in frames:
