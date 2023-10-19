@@ -320,6 +320,9 @@ def main():
 
                 # Use if this frame and the target frame are both marked 'keep'
                 if labels['behavior'][current_frame] == 'keep' and labels['behavior'][next_frame] == 'keep':
+                    # TODO The following math assumes a joint setup as in the Interbotix px150 where
+                    # the first five joints are the arm
+                    ordered_joint_names = ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate']
                     # Combine the target labels and the current state into a single table for this
                     # sample.
                     sample_labels = {}
@@ -327,16 +330,9 @@ def main():
                         sample_labels["target_{}".format(key)] = value
                         # Expand the full list of joint positions to the arm position and gripper
                         # position
-                        # TODO This assumes a joint setup as in the Interbotix px150 where the first
-                        # five joints are the arm
                         if key == 'position':
                             sample_labels["target_arm_position"] = [
-                                value[next_state['name'].index('waist')],
-                                value[next_state['name'].index('shoulder')],
-                                value[next_state['name'].index('elbow')],
-                                value[next_state['name'].index('wrist_angle')],
-                                value[next_state['name'].index('wrist_rotate')],
-                            ]
+                                value[next_state['name'].index(joint_name)] for joint_name in ordered_joint_names]
                     sample_labels["target_xyz_position"] = list(getGripperPosition(args.robot_model, next_state))
 
                     for key, value in current_data.items():
@@ -347,12 +343,7 @@ def main():
                         # five joints are the arm
                         if key == 'position':
                             sample_labels["current_arm_position"] = [
-                                value[current_data['name'].index('waist')],
-                                value[current_data['name'].index('shoulder')],
-                                value[current_data['name'].index('elbow')],
-                                value[current_data['name'].index('wrist_angle')],
-                                value[current_data['name'].index('wrist_rotate')],
-                            ]
+                                value[current_data['name'].index(joint_name)] for joint_name in ordered_joint_names]
                     sample_labels["current_xyz_position"] = list(getGripperPosition(args.robot_model, current_data))
 
                     # Find the mark that we are progressing towards from this frame.
