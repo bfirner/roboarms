@@ -303,7 +303,7 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
         next_position = net_out[0, output_locations['target_arm_position']].tolist()
         print("Requesting position {}".format(next_position))
         # TODO This shouldn't be a magic variable
-        if predicted_distance < 0.005:
+        if predicted_distance < 0.01:
             goal_idx = (goal_idx + 1) % len(goal_sequence)
             print("Switching to goal {}".format(goal_sequence[goal_idx]))
             # History goal distance is initialized to 10cm

@@ -12,6 +12,50 @@ from interbotix_common_modules.angle_manipulation import angle_manipulation as a
 from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
 
 
+# TODO These names are confusing (computeGripperPosition and getGripperPosition)
+def computeGripperPosition(positions):
+    """Get the x,y,z position of the gripper relative to the point under the waist in meters.
+
+    Works for the px150 robot arm.
+
+    Arguments:
+        positions      (List[float]): Positions of the joints
+    Returns:
+        x,y,z tuple of the gripper location, in meters
+    """
+    # TODO These are specific values for the px150 Interbotix robot arm. They should be
+    # placed into a library.
+    # TODO FIXME These should be calibrated to a known 0 position or the distances will be
+    # slightly off (or extremely off, depending upon the calibration).
+    # The four joint positions that influence end effector position
+    theta0 = positions[0]
+    theta1 = positions[1]
+    theta2 = positions[2]
+    theta3 = positions[3]
+    # The lengths of segments (or effective segments) that are moved by the previous joints,
+    # in mm
+    segment_G = 104    # Height of the pedestal upon which theta1 rotates
+    segment_C = 158    # Effective length from theta1 to theta2
+    segment_D = 147    # Length from theta2 to theta3
+    segment_H = 175    # Length of the grasper from theta4
+    arm_x = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.cos(theta0)
+    arm_y = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.sin(theta0)
+    arm_z = segment_G + math.cos(-theta1)*segment_C + math.sin(-theta1 + theta2)*segment_D + math.sin(-theta1 + theta2 - theta3)*segment_H
+    # Return the x,y,z end effector coordinates in meters
+    return (arm_x/1000., arm_y/1000., arm_z/1000.)
+
+    #model_generator = getattr(mrd, 'px150')
+    #robot_model = model_generator()
+    ## Below is "correct" but gets incorrect results. Instead we will use geometry and hand-measured
+    ## values for the arm segments. There must be something wrong in the M or Slist matrices
+    ## (probably the Slist) but the problem isn't immediately apparent.
+    ## 'M' is the home configuration of the robot, Slist has the joint screw axes at the home
+    ## position. This should return the end effector position.
+    #T = modern_robotics.FKinSpace(robot_model.M, robot_model.Slist, positions)
+    ## Return the x,y,z components of the translation matrix.
+    #return (T[0][-1], T[1][-1], T[2][-2])
+
+
 def getGripperPosition(robot_model, arm_record):
     """Get the x,y,z position of the gripper relative to the point under the waist in meters.
 
@@ -34,46 +78,13 @@ def getGripperPosition(robot_model, arm_record):
     # slightly off (or extremely off, depending upon the calibration).
     # The four joint positions that influence end effector position
     assert "px150" == robot_model
-    theta0 = arm_record['position'][arm_record['name'].index('waist')]
-    theta1 = arm_record['position'][arm_record['name'].index('shoulder')]
-    theta2 = arm_record['position'][arm_record['name'].index('elbow')]
-    theta3 = arm_record['position'][arm_record['name'].index('wrist_angle')]
-    # The lengths of segments (or effective segments) that are moved by the previous joints,
-    # in mm
-    segment_G = 104    # Height of the pedestal upon which theta1 rotates
-    segment_C = 158    # Effective length from theta1 to theta2
-    segment_D = 150    # Length from theta2 to theta3
-    segment_H = 170    # Length of the grasper from theta4
-    arm_x = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.cos(theta0)
-    arm_y = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.sin(theta0)
-    arm_z = segment_G + math.cos(-theta1)*segment_C + math.sin(-theta1 - theta2)*segment_D + math.sin(-theta1 - theta2 - theta3)*segment_H
-    # Return the x,y,z end effector coordinates in meters
-    return (arm_x/1000., arm_y/1000., arm_z/1000.)
-
-    # Below is "correct" but gets incorrect results. Instead we will use geometry and hand-measured
-    # values for the arm segments. There must be something wrong in the M or Slist matrices
-    # (probably the Slist) but the problem isn't immediately apparent.
-    # # TODO Since a mini-goal of this project is to handle actuation without calibration we won't be
-    # # using this for labels (because it would require calibration for the x,y,z location of the
-    # # gripper to be meaningful), but will be using this to determine the moved distance of the
-    # # gripper, and from that we will determine the next pose to predict.
-    # # The arm joints are separate from the gripper, which is represented by three "joints" even
-    # # though it is a single motor.
-    # gripper_names = ["wrist_rotate", "gripper", "left_finger", "right_finger"]
-    # names = [name for name in arm_record['name'] if name not in gripper_names]
-    # joint_positions = [
-    #     arm_record['position'][names.index(name)] for name in names
-    # ]
-    # # 'M' is the home configuration of the robot, Slist has the joint screw axes at the home
-    # # position. This should return the end effector position.
-    # T = modern_robotics.FKinSpace(robot_model.M, robot_model.Slist, joint_positions)
-    # # Return the x,y,z components of the translation matrix.
-    # return (T[0][-1], T[1][-1], T[2][-2])
-
-
-def getDistance(record_a, record_b):
-    """Return the Euclidean distance of the manipulator in record a and record b"""
-    return math.sqrt(sum([(a-b)**2 for a, b in zip(record_a, record_b)]))
+    joint_positions = [
+        arm_record['position'][arm_record['name'].index('waist')],
+        arm_record['position'][arm_record['name'].index('shoulder')],
+        arm_record['position'][arm_record['name'].index('elbow')],
+        arm_record['position'][arm_record['name'].index('wrist_angle')],
+    ]
+    return computeGripperPosition(joint_positions)
 
 
 def grepGripperLocationFromTensors(positions):
@@ -105,6 +116,11 @@ def grepGripperLocationFromTensors(positions):
     # value.
     return torch.cat(((arm_x/1000.).unsqueeze(1), (arm_y/1000.).unsqueeze(1),
             (arm_z/1000.).unsqueeze(1)), dim=1)
+
+
+def getDistance(record_a, record_b):
+    """Return the Euclidean distance of the manipulator in record a and record b"""
+    return math.sqrt(sum([(a-b)**2 for a, b in zip(record_a, record_b)]))
 
 
 def getStateAtNextPosition(reference_record, arm_records, movement_distance, robot_model,

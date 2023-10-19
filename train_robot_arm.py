@@ -100,7 +100,7 @@ parser.add_argument(
     default=False,
     action="store_true",
     help=("Normalize the outputs: output = (output - mean) / stddev. "
-        "This will read the entire dataset to find these values. After training the final weights will be adjusted so that no additional processing is required."))
+        "This will read the entire dataset to find these values, delaying initial training."))
 parser.add_argument(
     '--modeltype',
     type=str,
@@ -212,16 +212,16 @@ def computeDistanceForLoss(tensor_a, tensor_b):
     sums = torch.sum(squares, dim=1, keepdim=True)
     distance = torch.sqrt(sums)
 
-    #distance = torch.sqrt(torch.sum(torch.pow(diff, 2), dim=1, keepdim=True))
     return distance
 
 def lossWithDistance(output, labels, loss_fn, joint_range):
-    distance_error = computeDistanceForLoss(output[:,joint_range], labels[:,joint_range])
-    if 'MSELoss' == args.loss_fun:
-        distance_error = distance_error.pow(2)
+    return loss_fn(output, labels)
 
-    loss = distance_error.sum() + loss_fn(output, labels)
-    return loss
+    # Add the distance loss values to the regular loss values.
+    #distances = computeDistanceForLoss(output[:,joint_range], labels[:,joint_range])
+    #distance_error = loss_fn(torch.zeros(distances.size()).cuda(), distances)
+    #loss = distance_error + loss_fn(output, labels)
+    #return loss
 
     # If there are labels before or after the joint positions then add them into the loss along with
     # the distance error
@@ -333,8 +333,9 @@ dl_tuple = LoopTuple(*([None] * len(decode_strs)))
 # TODO FIXME Deterministic shuffle only shuffles within a range. Should perhaps manipulate what is
 # in the tar file by shuffling filenames after the dataset is created.
 dataset = (
-    wds.WebDataset(args.dataset, shardshuffle=True)
-    .shuffle(20000//in_frames, initial=20000//in_frames)
+    #wds.WebDataset(args.dataset, shardshuffle=True)
+    #.shuffle(20000//in_frames, initial=20000//in_frames)
+    wds.WebDataset(args.dataset, shardshuffle=False)
     # TODO This will hardcode all images to single channel numpy float images, but that isn't clear
     # from any documentation.
     # TODO Why "l" rather than decode to torch directly with "torchl"?
@@ -390,7 +391,7 @@ elif 'resnet34' == args.modeltype:
     optimizer = torch.optim.Adam(net.parameters(), lr=10e-5)
 elif 'bennet' == args.modeltype:
     net = BenNet(**model_args).cuda()
-    optimizer = torch.optim.Adam(net.parameters(), lr=10e-5)
+    optimizer = torch.optim.AdamW(net.parameters(), lr=10e-5)
 elif 'resnext50' == args.modeltype:
     # Model specific arguments
     model_args['expanded_linear'] = True
@@ -447,21 +448,21 @@ for i in range(label_size):
     class_names.append(f"{i}")
 
 if not args.no_train:
-    if args.save_worst_n is not None:
-        print(f"Saving {args.save_worst_n} highest error training images to {worst_training.worstn_path}.")
-
     # Gradient scaler for mixed precision training
     if use_amp:
         scaler = torch.cuda.amp.GradScaler()
     else:
         scaler = None
+
+    # Save models when the error is minimized
+    min_err = 1000
     for epoch in range(args.epochs):
         totals = RegressionResults(size=label_handler.size(), names=label_handler.names())
         worst_training = None
         if args.save_worst_n:
             worst_training = WorstExamples(
-                args.outname.split('.')[0] + "-worstN-train", class_names, save_worst_n)
-            print(f"Saving {save_worst_n} highest error training images to {worst_training.worstn_path}.")
+                args.outname.split('.')[0] + "-worstN-train", class_names, args.save_worst_n)
+            print(f"Saving {args.save_worst_n} highest error training images to {worst_training.worstn_path}.")
         print(f"Starting epoch {epoch}")
         trainEpoch(net=net, optimizer=optimizer, scaler=scaler, label_handler=label_handler,
                 train_stats=totals, dataloader=dataloader, vector_range=vector_range, train_frames=in_frames,
@@ -501,6 +502,28 @@ if not args.no_train:
                     eval_dataloader=eval_dataloader, vector_range=eval_range, train_frames=in_frames,
                     normalize_images=args.normalize, loss_fn=loss_fn, nn_postprocess=nn_postprocess)
 
+        if abs(totals.mean()) < min_err:
+            min_err = abs(totals.mean())
+            torch.save({
+                "model_dict": net.state_dict(),
+                "optim_dict": optimizer.state_dict(),
+                "py_random_state": random.getstate(),
+                "np_random_state": numpy.random.get_state(),
+                "torch_rng_state": torch.get_rng_state(),
+                "denormalizer_state_dict": denormalizer.state_dict() if denormalizer is not None else None,
+                "normalizer_state_dict": normalizer.state_dict() if normalizer is not None else None,
+                # Store some metadata to make it easier to recreate and use this model
+                "metadata": {
+                    'modeltype': args.modeltype,
+                    'labels': args.labels,
+                    'vector_inputs': args.vector_inputs,
+                    'convert_idx_to_classes': False,
+                    'label_size': label_handler.size(),
+                    'model_args': model_args,
+                    'normalize_images': args.normalize,
+                    'normalize_labels': args.normalize_outputs,
+                    },
+                }, (args.outname + ".epoch_{}".format(epoch)))
 
 
 # TODO FIXME Move this evaluation step into the evaluation function as well.
