@@ -128,7 +128,7 @@ def main():
             if denormalizer is not None:
                 output = denormalizer(output)
             dnn_position = computeGripperPosition(output[0,nn_joint_slice].tolist())
-            print("{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}".format(i, distance, *list(current_position), *list(target_position), *list(dnn_position)))
+            print("{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}".format(i, distance, *list(current_position), *list(target_position), *list(dnn_position), *current_xyz, *target_xyz))
 
 
 if __name__ == '__main__':
