@@ -134,6 +134,12 @@ parser.add_argument(
     default=None,
     help='Save N images for each class with the lowest classification score. Works with --evaluate')
 parser.add_argument(
+    '--batch_size',
+    type=int,
+    required=False,
+    default=32,
+    help='Batch size.')
+parser.add_argument(
     '--deterministic',
     required=False,
     default=False,
@@ -168,6 +174,12 @@ parser.add_argument(
     choices=['L1Loss', 'MSELoss'],
     type=str,
     help="Loss function to use during training.")
+parser.add_argument(
+    '--epochs_to_lr_decay',
+    type=int,
+    required=False,
+    default=90,
+    help='Epochs at the initial learning rate before learning rate decay (when using SGD). Default is 90.')
 
 args = parser.parse_args()
 
@@ -202,7 +214,7 @@ for vector_str in args.vector_inputs:
 
 # The loss will be calculated from the distance rather than the joint positions, but if they are not
 # in the labels we use the loss directly.
-loss_fn = getattr(torch.nn, args.loss_fun)()
+loss_fn = getattr(torch.nn, args.loss_fun)(reduction='sum')
 
 def computeDistanceForLoss(tensor_a, tensor_b):
     # The distance is the square root of the sum of the squares of the differences in the
@@ -301,7 +313,7 @@ else:
         print("Some labels have extremely low variance--they may be fixed values. Check your dataset.")
         exit(1)
 
-label_handler = LabelHandler(label_size, label_range, label_names)
+label_handler = LabelHandler(label_size=label_size, label_range=label_range, label_names=label_names)
 
 # The label value may need to be adjusted, to normalize before calculating loss.
 if normalizer is not None:
@@ -336,6 +348,7 @@ dataset = (
     #wds.WebDataset(args.dataset, shardshuffle=True)
     #.shuffle(20000//in_frames, initial=20000//in_frames)
     wds.WebDataset(args.dataset, shardshuffle=False)
+    .shuffle(20000//in_frames, initial=20000//in_frames)
     # TODO This will hardcode all images to single channel numpy float images, but that isn't clear
     # from any documentation.
     # TODO Why "l" rather than decode to torch directly with "torchl"?
@@ -346,7 +359,7 @@ dataset = (
 image_size = getImageSize(args.dataset, decode_strs)
 print(f"Decoding images of size {image_size}")
 
-batch_size = 32
+batch_size = args.batch_size
 dataloader = torch.utils.data.DataLoader(dataset, num_workers=0, batch_size=batch_size)
 
 if args.evaluate:
@@ -391,7 +404,11 @@ elif 'resnet34' == args.modeltype:
     optimizer = torch.optim.Adam(net.parameters(), lr=10e-5)
 elif 'bennet' == args.modeltype:
     net = BenNet(**model_args).cuda()
-    optimizer = torch.optim.AdamW(net.parameters(), lr=10e-5)
+    #optimizer = torch.optim.AdamW(net.parameters(), lr=10e-5)
+    #optimizer = torch.optim.Adam(net.parameters(), lr=10e-3)
+    optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.001, nesterov=True)
+    milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20]
+    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
 elif 'resnext50' == args.modeltype:
     # Model specific arguments
     model_args['expanded_linear'] = True

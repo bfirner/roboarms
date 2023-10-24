@@ -31,7 +31,7 @@ from data_utility import vidSamplingCommonCrop
 import sys
 sys.path.append('bee_analysis')
 
-from bee_analysis.utility.model_utility import (createModel, hasNormalizers, restoreModel,
+from bee_analysis.utility.model_utility import (createModel2, hasNormalizers, restoreModel,
         restoreNormalizers)
 
 
@@ -166,14 +166,14 @@ class RosHandler(Node):
         super(RosHandler, self).__del__()
 
 
-def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dnn_args, dnn_outputs,
+def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dnn_outputs,
         vector_inputs, goal_sequence, video_args, normalize_video, update_delay_s, exit_event):
     """Puts positions into the position queue.
 
     Arguments:
         robot_joint_names (list[str]): Joint names in the robot arm.
         position_queue    (Queue): Input queue to the robot
-        dnn_args           (dict): The dnn arguments
+        model_checkpoint  (str): The path to the model checkpoint.
         dnn_outputs       (list[str]): Names of the DNN outputs
         vector_inputs     (list[str]): Names of the DNN vector inputs
         goal_sequence     (list[int]): Sequence of goals
@@ -185,7 +185,9 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
     print("DNN inferencing thread started.")
 
     # Create the model and load the weights from the given checkpoint.
-    net = createModel(**dnn_args)
+    checkpoint = torch.load(model_checkpoint)
+    # Get the model arguments from the training metadata stored in the checkpoint
+    net = createModel2(checkpoint['metadata']['modeltype'], checkpoint['metadata']['model_args'])
     restoreModel(model_checkpoint, net)
     # Restore the denormalization network, if it was used.
     if hasNormalizers(model_checkpoint):
@@ -193,7 +195,7 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
         denormalizer.eval().cuda()
     else:
         denormalizer = None
-    net = net.eval().cuda()
+    net.eval().cuda()
 
     # Initialize ROS2 nodes
     #rclpy.init()
@@ -256,67 +258,71 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
         with data_read_lock:
             ready = image_processor.frame is not None and image_processor.position is not None
 
-    # Wait for messages until an interrupt is received
-    while not exit_event.is_set():
-        # Forward the frame through the DNN model
-        # This always uses the most recent frame, so if the update rate is much faster than the
-        # frame rate the only thing that will update between commands is the robot's current
-        # position.
-        with data_read_lock:
-            new_frame = image_processor.frame.float()
-            joint_positions = image_processor.position
+    with torch.no_grad():
+        # Wait for messages until an interrupt is received
+        while not exit_event.is_set():
+            # Forward the frame through the DNN model
+            # This always uses the most recent frame, so if the update rate is much faster than the
+            # frame rate the only thing that will update between commands is the robot's current
+            # position.
+            with data_read_lock:
+                new_frame = image_processor.frame.float()
+                joint_positions = image_processor.position
 
-        new_frame = new_frame.cuda()
-        # Normalize inputs: input = (input - mean)/stddev
-        if normalize_video:
-            v, m = torch.var_mean(new_frame)
-            new_frame = (new_frame - m) / v
+            new_frame = new_frame.cuda()
+            # Normalize inputs: input = (input - mean)/stddev
+            if checkpoint['metadata']['normalize_images']:
+                v, m = torch.var_mean(new_frame)
+                new_frame = (new_frame - m) / v
 
-        # Set up vector inputs
-        out_idx = 0
-        for input_name in vector_inputs:
-            # Vector inputs are size 1 unless they are the current robot position
-            vector_input_locations[input_name] = out_idx
-            if input_name == 'current_position':
-                vector_inputs[0, out_idx:out_idx+len(robot_joint_names)].copy_(torch.tensor(joint_positions))
-                out_idx += len(robot_joint_names)
-            elif input_name == 'current_arm_position':
-                vector_inputs[0, out_idx:out_idx+len(robot_joint_names)].copy_(torch.tensor(joint_positions))
-                out_idx += len(robot_joint_names)
-            elif input_name == 'goal_mark':
-                vector_inputs[0, out_idx] = goal_sequence[goal_idx]
-                out_idx += 1
-            elif input_name[:len("goal_distance_prev_")] == "goal_distance_prev_":
-                vector_inputs[0, out_idx] = prev_goal_distance
-                out_idx += 1
+            # Set up vector inputs
+            out_idx = 0
+            for input_name in vector_inputs:
+                # Vector inputs are size 1 unless they are the current robot position
+                vector_input_locations[input_name] = out_idx
+                if input_name == 'current_position':
+                    vector_inputs[0, out_idx:out_idx+len(robot_joint_names)].copy_(torch.tensor(joint_positions))
+                    out_idx += len(robot_joint_names)
+                elif input_name == 'current_arm_position':
+                    vector_inputs[0, out_idx:out_idx+len(robot_joint_names)].copy_(torch.tensor(joint_positions))
+                    out_idx += len(robot_joint_names)
+                elif input_name == 'goal_mark':
+                    vector_inputs[0, out_idx] = goal_sequence[goal_idx]
+                    out_idx += 1
+                elif input_name[:len("goal_distance_prev_")] == "goal_distance_prev_":
+                    vector_inputs[0, out_idx] = prev_goal_distance
+                    out_idx += 1
 
-        # goal_mark determines the state to feed back to the network via the vector inputs
-        # goal_distance is used to determine when to switch goals.
-        # The target_position output contains the next set of joint positions.
+            # goal_mark determines the state to feed back to the network via the vector inputs
+            # goal_distance is used to determine when to switch goals.
+            # The target_position output contains the next set of joint positions.
 
-        net_out = net.forward(new_frame, vector_inputs)
-        if denormalizer is not None:
-            net_out = denormalizer(net_out)
-        predicted_distance = 1.0
-        if 'goal_distance' in dnn_outputs:
-            net_out[0, output_locations['goal_distance']].item()
-        next_position = net_out[0, output_locations['target_arm_position']].tolist()
-        print("Requesting position {}".format(next_position))
-        # TODO This shouldn't be a magic variable
-        if predicted_distance < 0.01:
-            goal_idx = (goal_idx + 1) % len(goal_sequence)
-            print("Switching to goal {}".format(goal_sequence[goal_idx]))
-            # History goal distance is initialized to 10cm
-            prev_goal_distance = 0.1
-        else:
-            # Save the current goal distance to be used as a status input.
-            prev_goal_distance = predicted_distance
-        # Extract the next position from the model outputs and send it to the robot.
-        position_queue.put((next_position, update_delay_s))
-        # TODO The sleep should be slightly less than the movement time to make movement appear
-        # smooth and should also consider things like inference time. Just multiplying by 0.95 here
-        # is a hack.
-        time.sleep(0.95*update_delay_s)
+            net_out = net.forward(new_frame, vector_inputs)
+            if denormalizer is not None:
+                net_out = denormalizer(net_out)
+            predicted_distance = 1.0
+            if 'goal_distance' in dnn_outputs:
+                net_out[0, output_locations['goal_distance']].item()
+            if 'target_arm_position' in output_locations:
+                next_position = net_out[0, output_locations['target_arm_position']].tolist()
+            else:
+                raise RuntimeError("No target position for robot in DNN outputs!")
+            print("Requesting position {}".format(next_position))
+            # TODO This shouldn't be a magic variable
+            if predicted_distance < 0.01:
+                goal_idx = (goal_idx + 1) % len(goal_sequence)
+                print("Switching to goal {}".format(goal_sequence[goal_idx]))
+                # History goal distance is initialized to 10cm
+                prev_goal_distance = 0.1
+            else:
+                # Save the current goal distance to be used as a status input.
+                prev_goal_distance = predicted_distance
+            # Extract the next position from the model outputs and send it to the robot.
+            position_queue.put((next_position, update_delay_s))
+            # TODO The sleep should be slightly less than the movement time to make movement appear
+            # smooth and should also consider things like inference time. Just multiplying by 0.95 here
+            # is a hack.
+            time.sleep(0.95*update_delay_s)
 
     # Tell the arm that we are done with actuation.
     position_queue.put((None, None))
@@ -477,17 +483,6 @@ def main():
         else:
             dnn_output_size += 1
 
-    # Arguments for the createModel function
-    model_args = {
-        'model_type': args.modeltype,
-        'in_channels': args.out_channels*args.frames_per_sample,
-        'frame_height': args.height,
-        'frame_width': args.width,
-        'output_size': dnn_output_size,
-        'other_args': {'vector_input_size': vector_input_size}
-        #'other_args': {'vector_input_size': vector_input_size, 'skip_last_relu': True, 'linear_size': 512, 'expanded_linear': True}
-    }
-
     # Arguments for RosHandler constructor
     video_args = {
         'arm_topic_string': "/{}/joint_states".format(args.puppet_name),
@@ -503,7 +498,7 @@ def main():
 
     # Start the DNN inference thread before calling the blocking start_robot() call.
     inferencer = Thread(target=dnn_inference_thread, args=(bot.arm.group_info.joint_names,
-        bot.position_commands, args.model_checkpoint, model_args, args.dnn_outputs,
+        bot.position_commands, args.model_checkpoint, args.dnn_outputs,
         args.vector_inputs, args.goal_sequence, video_args, args.normalize_video, (1. / args.cps), exit_event)).start()
 
     # This will block until interrupted

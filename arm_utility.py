@@ -214,6 +214,9 @@ class ArmReplay(InterbotixManipulatorXS):
     com_effort = None
     grip_moving = 0
 
+    # The joints required to move the arm
+    ordered_joint_names = ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate']
+
     def __init__(self, puppet_model, puppet_name, corrections, cmd_queue, args=None):
         InterbotixManipulatorXS.__init__(
             self,
@@ -283,10 +286,11 @@ class ArmReplay(InterbotixManipulatorXS):
         """
         # The first five positions correspond to the arm
         arm_joints = 5
+        ordered_position = [position[self.ordered_joint_names.index(name)] for name in self.arm.group_info.joint_names]
         # Apply the calibration correction
         for idx in range(len(self.corrections)):
-            position[idx] += self.corrections[idx]
-        self.core.get_logger().info('Moving to {} in {}s.'.format(position[:arm_joints], delay))
-        succ = self.arm.set_joint_positions(joint_positions=position[:arm_joints],
+            ordered_position[idx] += self.corrections[idx]
+        self.core.get_logger().info('Moving to {} in {}s.'.format(ordered_position[:arm_joints], delay))
+        succ = self.arm.set_joint_positions(joint_positions=ordered_position[:arm_joints],
             moving_time=delay, blocking=False)
         print("Movement success: {}".format(succ))
