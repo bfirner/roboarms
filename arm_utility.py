@@ -3,7 +3,6 @@
 
 
 import math
-import modern_robotics
 import rclpy
 import torch
 import yaml
@@ -47,7 +46,7 @@ def computeGripperPosition(positions):
     segment_H = 175    # Length of the grasper from theta4
     arm_x = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.cos(theta0)
     arm_y = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.sin(theta0)
-    arm_z = segment_G + math.cos(-theta1)*segment_C + math.sin(-theta1 + theta2)*segment_D + math.sin(-theta1 + theta2 - theta3)*segment_H
+    arm_z = segment_G + math.cos(-theta1)*segment_C + math.sin(theta1 + theta2)*segment_D + math.sin(theta1 + theta2 + theta3)*segment_H
     # Return the x,y,z end effector coordinates in meters
     return (arm_x/1000., arm_y/1000., arm_z/1000.)
 
