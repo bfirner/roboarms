@@ -1,10 +1,10 @@
 # Servo locations for a "0" position. Because the connection from the elbow to the shoulder is made
 # in two pieces, in order to get the elbow joint to be directly above the shoulder joint they are
 # both slightly bent.
-waist:         0.035
-shoulder:      0.38
-elbow:         -0.29
-wrist_angle:   0.07
+waist:         -0.035
+shoulder:      -0.38
+elbow:         0.29
+wrist_angle:   -0.07
 wrist_rotate:  0.0
 gripper:       1.3468351364135742
 left_finger:   0.03744808956980705

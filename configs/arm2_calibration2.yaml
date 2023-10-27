@@ -2,9 +2,9 @@
 # in two pieces, in order to get the elbow joint to be directly above the shoulder joint they are
 # both slightly bent.
 waist:         0.0
-shoulder:      0.40
-elbow:         -0.27
-wrist_angle:   0.07
+shoulder:      -0.40
+elbow:         0.27
+wrist_angle:   -0.07
 wrist_rotate:  0.0
 gripper:       1.2808740139007568
 left_finger:   0.03707965835928917
