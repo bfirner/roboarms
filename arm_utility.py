@@ -12,6 +12,13 @@ from interbotix_common_modules.angle_manipulation import angle_manipulation as a
 from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
 
 
+def getCalibratedJoints(arm_data, ordered_joint_names, calibration):
+    positions = []
+    for joint_name in ordered_joint_names:
+        joint_index = arm_data['name'].index(joint_name)
+        positions.append(arm_data['position'][joint_index] - calibration[joint_name])
+    return positions
+
 # TODO These names are confusing (computeGripperPosition and getGripperPosition)
 def computeGripperPosition(positions):
     """Get the x,y,z position of the gripper relative to the point under the waist in meters.

@@ -20,7 +20,7 @@ import torch
 import webdataset as wds
 import yaml
 
-from arm_utility import (getDistance, getGripperPosition, getStateAtNextPosition)
+from arm_utility import (getDistance, computeGripperPosition, getCalibratedJoints, getStateAtNextPosition)
 from data_utility import (ArmDataInterpolator, readArmRecords, readLabels, readVideoTimestamps)
 from bee_analysis.utility.video_utility import (getVideoInfo, VideoSampler)
 # These are the robot descriptions to match function calls in the modern robotics package.
@@ -82,8 +82,12 @@ def main():
     parser.add_argument(
         '--train_robot',
         type=str,
-        default='arm1',
+        default='arm2',
         help="The robot whose state is used as the training target.")
+    parser.add_argument(
+        '--arm_calibration',
+        default='configs/arm2_calibration2.yaml',
+        help="The calibration for the data source.")
     parser.add_argument(
         '--video_scale',
         type=float,
@@ -188,6 +192,10 @@ def main():
 
     model_generator = getattr(mrd, args.robot_model)
     robot_model = model_generator()
+
+    # Get calibration corrections for the robot
+    with open(args.arm_calibration, 'r') as data:
+        calibration = yaml.safe_load(data)
 
     # Loop over each rosbag directory
     # TODO Split this part into threads
@@ -331,9 +339,8 @@ def main():
                         # Expand the full list of joint positions to the arm position and gripper
                         # position
                         if key == 'position':
-                            sample_labels["target_arm_position"] = [
-                                value[next_state['name'].index(joint_name)] for joint_name in ordered_joint_names]
-                    sample_labels["target_xyz_position"] = list(getGripperPosition(args.robot_model, next_state))
+                            sample_labels["target_arm_position"] = getCalibratedJoints(next_state, ordered_joint_names, calibration)
+                            sample_labels["target_xyz_position"] = list(computeGripperPosition(sample_labels['target_arm_position']))
 
                     for key, value in current_data.items():
                         sample_labels["current_{}".format(key)] = value
@@ -342,9 +349,8 @@ def main():
                         # TODO This assumes a joint setup as in the Interbotix px150 where the first
                         # five joints are the arm
                         if key == 'position':
-                            sample_labels["current_arm_position"] = [
-                                value[current_data['name'].index(joint_name)] for joint_name in ordered_joint_names]
-                    sample_labels["current_xyz_position"] = list(getGripperPosition(args.robot_model, current_data))
+                            sample_labels["current_arm_position"] = getCalibratedJoints(current_data, ordered_joint_names, calibration)
+                            sample_labels["current_xyz_position"] = list(computeGripperPosition(sample_labels['current_arm_position']))
 
                     # Find the mark that we are progressing towards from this frame.
                     future_marks = labels['mark'][(int(frame_nums[-1])):]
@@ -362,13 +368,13 @@ def main():
                     # We cannot use this sample if there is no goal for the current motion
                     # Only accept goals in our training list
                     if (0 == len(args.goals)) or (next_mark is not None and next_mark in args.goals):
-                        cur_pos = getGripperPosition(args.robot_model, current_data)
+                        cur_pos = sample_labels["current_xyz_position"]
                         if next_mark is not None:
                             # The goal mark is the one currently being moved towards
                             sample_labels["goal_mark"] = next_mark
                             # Get the distance to the next mark
                             goal_record = arm_data.records[int(frame_nums[-1]) + next_mark_idx]
-                            goal_pos = getGripperPosition(args.robot_model, goal_record)
+                            goal_pos = computeGripperPosition(args.robot_model, getCalibratedJoints(goal_record, ordered_joint_names, calibration))
                             sample_labels["goal_distance"] = getDistance(cur_pos, goal_pos)
 
                             # Go backwards to create several different status inputs for previous mark
@@ -378,7 +384,7 @@ def main():
                                 # Use a default 10cm distance if the distance to the goal didn't exist
                                 sample_labels["goal_distance_prev_1cm"] = 0.1
                             else:
-                                prev_1cm_pos = getGripperPosition(args.robot_model, prev_1cm_record)
+                                prev_1cm_pos = computeGripperPosition(args.robot_model, getCalibratedJoints(prev_1cm_record, ordered_joint_names, calibration))
                                 sample_labels["goal_distance_prev_1cm"] = getDistance(prev_1cm_pos, goal_pos)
 
                             prev_2cm_record = arm_data.get_record_at_distance(0.02)
@@ -386,7 +392,7 @@ def main():
                                 # Use a default 10cm distance if the distance to the goal didn't exist
                                 sample_labels["goal_distance_prev_2cm"] = 0.1
                             else:
-                                prev_2cm_pos = getGripperPosition(args.robot_model, prev_2cm_record)
+                                prev_2cm_pos = computeGripperPosition(args.robot_model, getCalibratedJoints(prev_2cm_record, ordered_joint_names, calibration))
                                 sample_labels["goal_distance_prev_2cm"] = getDistance(prev_2cm_pos, goal_pos)
 
                             prev_3cm_record = arm_data.get_record_at_distance(0.03)
@@ -394,7 +400,7 @@ def main():
                                 # Use a default 10cm distance if the distance to the goal didn't exist
                                 sample_labels["goal_distance_prev_3cm"] = 0.1
                             else:
-                                prev_3cm_pos = getGripperPosition(args.robot_model, prev_3cm_record)
+                                prev_3cm_pos = computeGripperPosition(args.robot_model, getCalibratedJoints(prev_3cm_record, ordered_joint_names, calibration))
                                 sample_labels["goal_distance_prev_3cm"] = getDistance(prev_3cm_pos, goal_pos)
 
                         sample_labels['metadata_cur_frame'] = current_frame
