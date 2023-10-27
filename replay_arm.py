@@ -17,11 +17,12 @@ from arm_utility import (ArmReplay, getCalibrationDiff)
 from data_utility import (ArmDataInterpolator, readArmRecords)
 
 
-def position_handling_thread(robot_joint_names, arm_records, position_queue, update_delay_s):
+def position_handling_thread(robot_joint_names, control_calibration, arm_records, position_queue, update_delay_s):
     """Puts positions into the position queue.
 
     Arguments:
         robot_joint_names (list[str]): Joint names in the robot arm.
+        control_calibration (dict): Joint angle calibrations (add to get their calibration position)
         arm_records (ros records):
         position_queue    (Queue): Input queue to the robot
         update_delay_s    (float): Update delay in seconds
@@ -38,7 +39,11 @@ def position_handling_thread(robot_joint_names, arm_records, position_queue, upd
     cur_time = arm_records[0]['timestamp']
     cur_position = arm_records[0]['position']
     # Go to the first position in three quarters of a seconds, just in case it is far away
-    position_queue.put(([cur_position[message_joint_names.index(name)] for name in robot_joint_names], 0.75))
+    calibrated_positions = []
+    for joint_name in robot_joint_names:
+        joint_index = message_joint_names.index(joint_name)
+        calibration_positions.append(cur_position[joint_index] + control_calibration[joint_name])
+    position_queue.put((calibrated_positions, 0.75))
 
     # Wait for the robot to finish that movement before cramming the queue full with the faster
     # update rate of later commands.
@@ -55,7 +60,12 @@ def position_handling_thread(robot_joint_names, arm_records, position_queue, upd
         while arm_interpolate.last_idx < len(arm_records):
             cur_time = cur_time + update_delay_nanos
             next_record = arm_interpolate.interpolate(cur_time)
-            position_queue.put(([next_record['position'][message_joint_names.index(name)] for name in robot_joint_names], 0.75))
+            calibrated_positions = []
+            for joint_name in robot_joint_names:
+                joint_index = message_joint_names.index(joint_name)
+                calibration_positions.append(cur_position[joint_index] + control_calibration[joint_name])
+
+            position_queue.put((calibrated_positions, 0.75))
             time.sleep(update_delay_s)
     except IndexError:
         # We probably ran out of records. Time to exit.
@@ -109,15 +119,18 @@ def main():
     arm_topic = f"/{args.src_robot}/joint_states"
     arm_records = readArmRecords(args.bag_path, arm_topic)
 
-    # Get calibration corrections and start the robot
-    corrections = getCalibrationDiff(args.control_calibration, args.puppet_calibration)
+    # Get calibration corrections for the robots
+    with open(args.control_calibration, 'r') as data:
+        control_calibration = yaml.safe_load(data)
+    with open(args.puppet_calibration, 'r') as data:
+        puppet_calibration = yaml.safe_load(data)
 
     position_commands = Queue()
-    bot = ArmReplay(args.puppet_model, args.puppet_name, corrections, position_commands)
+    bot = ArmReplay(args.puppet_model, args.puppet_name, puppet_calibration, position_commands)
 
     # Start the record reading thread before calling the blocking start_robot() call.
     reader = Thread(target=position_handling_thread,
-        args=(bot.arm.group_info.joint_names, arm_records, bot.position_commands, (1. / args.cps))).start()
+        args=(bot.arm.group_info.joint_names, control_calibration, arm_records, bot.position_commands, (1. / args.cps))).start()
 
     # This will block until the replay is complete.
     bot.start_robot()

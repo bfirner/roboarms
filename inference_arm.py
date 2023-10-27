@@ -22,7 +22,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import (Image, JointState)
 
 # Includes from this project
-from arm_utility import (ArmReplay, getCalibrationDiff)
+from arm_utility import (ArmReplay)
 from data_utility import vidSamplingCommonCrop
 
 
@@ -338,8 +338,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--puppet_model', default='px150')
     parser.add_argument('--puppet_name', default='arm2')
-    parser.add_argument('--control_calibration', default='configs/arm2_calibration.yaml',
-        help="If control_calibration and puppet_calibration differ, correct during replay.")
     parser.add_argument('--puppet_calibration', default='configs/arm2_calibration.yaml',
         help="If control_calibration and puppet_calibration differ, correct during replay.")
     parser.add_argument(
@@ -454,11 +452,12 @@ def main():
     # Set up the queue for communication from the neural network to the robot
     position_commands = Queue()
 
-    # Get calibration corrections and start the robot
-    corrections = getCalibrationDiff(args.control_calibration, args.puppet_calibration)
+    # Get calibration corrections for the robot
+    with open(args.puppet_calibration, 'r') as data:
+        puppet_calibration = yaml.safe_load(data)
 
     # Create the robot
-    bot = ArmReplay(args.puppet_model, args.puppet_name, corrections, position_commands)
+    bot = ArmReplay(args.puppet_model, args.puppet_name, puppet_calibration, position_commands)
 
     # Find the size of the model image inputs, vector inputs, and outputs
     vector_input_size = 0

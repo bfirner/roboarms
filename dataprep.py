@@ -163,7 +163,7 @@ def main():
         type=int,
         # Goals to give the robot arm.
         nargs='+',
-        required=True,
+        required=False,
         default=[],
         help='Goals to give the robot arm.')
     parser.add_argument(
@@ -361,40 +361,41 @@ def main():
 
                     # We cannot use this sample if there is no goal for the current motion
                     # Only accept goals in our training list
-                    if next_mark is not None and next_mark in args.goals:
-                        # The goal mark is the one currently being moved towards
-                        sample_labels["goal_mark"] = next_mark
-                        # Get the distance to the next mark
+                    if (0 == len(args.goals)) or (next_mark is not None and next_mark in args.goals):
                         cur_pos = getGripperPosition(args.robot_model, current_data)
-                        goal_record = arm_data.records[int(frame_nums[-1]) + next_mark_idx]
-                        goal_pos = getGripperPosition(args.robot_model, goal_record)
-                        sample_labels["goal_distance"] = getDistance(cur_pos, goal_pos)
+                        if next_mark is not None:
+                            # The goal mark is the one currently being moved towards
+                            sample_labels["goal_mark"] = next_mark
+                            # Get the distance to the next mark
+                            goal_record = arm_data.records[int(frame_nums[-1]) + next_mark_idx]
+                            goal_pos = getGripperPosition(args.robot_model, goal_record)
+                            sample_labels["goal_distance"] = getDistance(cur_pos, goal_pos)
 
-                        # Go backwards to create several different status inputs for previous mark
-                        # distances.
-                        prev_1cm_record = arm_data.get_record_at_distance(0.01)
-                        if prev_1cm_record is None:
-                            # Use a default 10cm distance if the distance to the goal didn't exist
-                            sample_labels["goal_distance_prev_1cm"] = 0.1
-                        else:
-                            prev_1cm_pos = getGripperPosition(args.robot_model, prev_1cm_record)
-                            sample_labels["goal_distance_prev_1cm"] = getDistance(prev_1cm_pos, goal_pos)
+                            # Go backwards to create several different status inputs for previous mark
+                            # distances.
+                            prev_1cm_record = arm_data.get_record_at_distance(0.01)
+                            if prev_1cm_record is None:
+                                # Use a default 10cm distance if the distance to the goal didn't exist
+                                sample_labels["goal_distance_prev_1cm"] = 0.1
+                            else:
+                                prev_1cm_pos = getGripperPosition(args.robot_model, prev_1cm_record)
+                                sample_labels["goal_distance_prev_1cm"] = getDistance(prev_1cm_pos, goal_pos)
 
-                        prev_2cm_record = arm_data.get_record_at_distance(0.02)
-                        if prev_2cm_record is None:
-                            # Use a default 10cm distance if the distance to the goal didn't exist
-                            sample_labels["goal_distance_prev_2cm"] = 0.1
-                        else:
-                            prev_2cm_pos = getGripperPosition(args.robot_model, prev_2cm_record)
-                            sample_labels["goal_distance_prev_2cm"] = getDistance(prev_2cm_pos, goal_pos)
+                            prev_2cm_record = arm_data.get_record_at_distance(0.02)
+                            if prev_2cm_record is None:
+                                # Use a default 10cm distance if the distance to the goal didn't exist
+                                sample_labels["goal_distance_prev_2cm"] = 0.1
+                            else:
+                                prev_2cm_pos = getGripperPosition(args.robot_model, prev_2cm_record)
+                                sample_labels["goal_distance_prev_2cm"] = getDistance(prev_2cm_pos, goal_pos)
 
-                        prev_3cm_record = arm_data.get_record_at_distance(0.03)
-                        if prev_3cm_record is None:
-                            # Use a default 10cm distance if the distance to the goal didn't exist
-                            sample_labels["goal_distance_prev_3cm"] = 0.1
-                        else:
-                            prev_3cm_pos = getGripperPosition(args.robot_model, prev_3cm_record)
-                            sample_labels["goal_distance_prev_3cm"] = getDistance(prev_3cm_pos, goal_pos)
+                            prev_3cm_record = arm_data.get_record_at_distance(0.03)
+                            if prev_3cm_record is None:
+                                # Use a default 10cm distance if the distance to the goal didn't exist
+                                sample_labels["goal_distance_prev_3cm"] = 0.1
+                            else:
+                                prev_3cm_pos = getGripperPosition(args.robot_model, prev_3cm_record)
+                                sample_labels["goal_distance_prev_3cm"] = getDistance(prev_3cm_pos, goal_pos)
 
                         sample_labels['metadata_cur_frame'] = current_frame
                         sample_labels['metadata_next_frame'] = next_frame

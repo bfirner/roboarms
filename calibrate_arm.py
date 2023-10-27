@@ -23,7 +23,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import (Image, JointState)
 
 # Includes from this project
-from arm_utility import (ArmReplay, getCalibrationDiff)
+from arm_utility import (ArmReplay)
 from data_utility import vidSamplingCommonCrop
 
 
@@ -50,7 +50,7 @@ def main():
 
     # The calibration is added to the position to correct for any offsets, so subtract from 0 to get
     # the values that should send the robot to the 0 position
-    zero_position = [-calibration[joint_name] for joint_name in bot.arm.group_info.joint_names]
+    zero_position = [calibration[joint_name] for joint_name in bot.arm.group_info.joint_names]
 
     # Go to the calibrated zero position in a second
     bot.goto(position=zero_position, delay=1.0)

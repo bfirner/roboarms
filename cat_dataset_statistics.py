@@ -126,6 +126,10 @@ def main():
         if args.model is not None:
             tile_predictions = []
 
+    # Need to store coordinates and features for correlation detection if the features will be used
+    if args.print_features:
+        all_xyz_locations_and_features = []
+
     # Print out the header
     header = "sample, target distance, current x, current y, current z, target x, target y, "
     "target z, current waist, current shoulder, current elbow, current wrist_angle, "
@@ -158,7 +162,7 @@ def main():
         current_position = computeGripperPosition(current)
         target_position = computeGripperPosition(target)
         distance = getDistance(current_position, target_position)
-        csv_line = ("{}" + ", {}" * 17).format(i, distance, *list(current_xyz), *list(target_xyz),
+        csv_line = ("{}" + ", {:.6f}" * 17).format(i, distance, *list(current_xyz), *list(target_xyz),
                 *list(current), *list(target))
         if args.model is not None:
             # Normalize inputs: input = (input - mean)/stddev
@@ -175,7 +179,13 @@ def main():
                 output = denormalizer(output)
             dnn_xyz = dnn_output_to_xyz(output)
             # Add the DNN predictions to the output line
-            csv_line += (", {:.8f}" * 8).format(*list(dnn_xyz), *output[0].tolist())
+            if "target_arm_position" in checkpoint['metadata']['labels']:
+                dnn_joint_positions = output[0].tolist()
+            else:
+                # There aren't any joint position, fill in nans so that anything using them will hit
+                # an error.
+                dnn_joint_positions = [float('nan')] * 5
+            csv_line += (", {:.8f}" * 8).format(*list(dnn_xyz), *dnn_joint_positions)
             if i < args.save_images:
                 tile_predictions.append(list(dnn_xyz))
 
@@ -186,6 +196,12 @@ def main():
                 if args.print_features:
                     flat_features = maps[-1].flatten().tolist()
                     csv_line += ", " + ", ".join(["{:.6f}".format(feature) for feature in flat_features])
+                    # TODO Search for correlations between all features and x, y, z, and the joint
+                    # positions
+                    # Note that we use the dnn xyz prediction here, not the true xyz, because the
+                    # features must be interpretable by the DNN itself.
+                    all_xyz_locations_and_features.append(list(dnn_xyz) + flat_features)
+
                 # Save the feature maps
                 if i < args.save_features:
                     for layer_i, fmap in enumerate(maps):
@@ -229,6 +245,16 @@ def main():
                 label_str = "DNN: {:.4f}, {:.4f}, {:.4f}".format(*tile_predictions[i])
                 draw.text((x,y), label_str, fill=color, font=font)
         img.save("dataset_images.png")
+
+    # Print out the correlations between features and coordinates if the features were also printed
+    if args.print_features:
+        location_and_features_tensor = torch.tensor(all_xyz_locations_and_features)
+        # The corrcoef function requires variables in rows and observations in columns, so run on
+        # the rotated tensor
+        correlations = location_and_features_tensor.rot90(k=1, dims=[1,0]).corrcoef()
+        print("x: {}".format(correlations[0].tolist()))
+        print("y: {}".format(correlations[1].tolist()))
+        print("z: {}".format(correlations[2].tolist()))
 
 
 

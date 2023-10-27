@@ -69,6 +69,7 @@ import argparse
 import rclpy
 import sys
 import time
+import yaml
 from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
 
@@ -78,7 +79,6 @@ from sensor_msgs.msg import JointState
 from interbotix_common_modules.angle_manipulation import angle_manipulation as ang
 from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
 
-from arm_utility import getCalibrationDiff
 
 class ArmPuppet(InterbotixManipulatorXS):
     # This class has a core type through which we will access robot data.
@@ -95,7 +95,7 @@ class ArmPuppet(InterbotixManipulatorXS):
     com_effort = None
     grip_moving = 0
 
-    def __init__(self, pargs, corrections, args=None):
+    def __init__(self, pargs, calibration, args=None):
         InterbotixManipulatorXS.__init__(
             self,
             robot_model=pargs.puppet_model,
@@ -105,12 +105,16 @@ class ArmPuppet(InterbotixManipulatorXS):
             start_on_init=True,
             args=args
         )
-        self.corrections = [0,0,0,0,0]
-        for joint_name in corrections.keys():
+        # The calibration corrections to bring the robot to the 0 position when 0's are commanded.
+        # Note that because the connection from the elbow to the shoulder is made in two pieces, in
+        # order to get the elbow joint to be directly above the shoulder, both of those joints are
+        # slightly bent. The corrections are subtracted from the desired values.
+        self.calibration = [0,0,0,0,0]
+        for joint_name in calibration.keys():
             # Don't try to correct the gripper or finger joints, only the arm joints
             if joint_name in self.arm.group_info.joint_names:
                 joint_idx = self.arm.group_info.joint_names.index(joint_name)
-                self.corrections[joint_idx] = corrections[joint_name]
+                self.calibration[joint_idx] = calibration[joint_name]
 
         self.rate = self.core.create_rate(self.current_loop_rate)
 
@@ -156,8 +160,8 @@ class ArmPuppet(InterbotixManipulatorXS):
                 #        moving_time=2.0, blocking=True)
             self.com_position = msg.position
             # Apply the calibration correction
-            for idx in range(len(self.corrections)):
-                self.com_position[idx] += self.corrections[idx]
+            for idx in range(len(self.calibration)):
+                self.com_position[idx] += self.calibration[idx]
             self.com_velocity = msg.velocity
             self.com_effort = msg.effort
 
@@ -227,17 +231,23 @@ def main(args=None):
     p.add_argument('--puppet_model', default='px150')
     p.add_argument('--puppet_name', default='arm2')
     p.add_argument('--control_name', default='arm1')
-    p.add_argument('--control_calibration', default='configs/arm1_calibration.yaml')
-    p.add_argument('--puppet_calibration', default='configs/arm2_calibration.yaml')
+    p.add_argument('--control_calibration', default='configs/arm1_calibration2.yaml')
+    p.add_argument('--puppet_calibration', default='configs/arm2_calibration2.yaml')
     p.add_argument('args', nargs=argparse.REMAINDER)
 
     command_line_args = remove_ros_args(args=sys.argv)[1:]
     ros_args = p.parse_args(command_line_args)
 
-    # Get calibration corrections
-    corrections = getCalibrationDiff(ros_args.control_calibration, ros_args.puppet_calibration)
+    # Get calibration for the robot
+    with open(ros_args.puppet_calibration, 'r') as data:
+        puppet_calibration = yaml.safe_load(data)
+    with open(ros_args.control_calibration, 'r') as data:
+        control_calibration = yaml.safe_load(data)
 
-    bot = ArmPuppet(ros_args, corrections, args=args)
+    for joint in puppet_calibration.keys():
+        puppet_calibration[joint] -= control_calibration[joint]
+
+    bot = ArmPuppet(ros_args, puppet_calibration, args=args)
     bot.start_robot()
 
 
