@@ -164,8 +164,11 @@ def getStateAtNextPosition(reference_record, arm_records, movement_distance, rob
         idx += 1
 
     # If we ended up past the end of the records then they don't have anything at the desired
-    # distance
-    if idx >= len(arm_records):
+    # distance. If the record doesn't clear the desired distance also return None.
+    distance_good = (
+        (not use_path_distance and distance >= movement_distance) or
+        (use_path_distance and path_distance >= movement_distance))
+    if idx >= len(arm_records) or not distance_good:
         return None, None
 
     return next_record, idx-1

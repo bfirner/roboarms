@@ -10,6 +10,7 @@ import torch
 import webdataset as wds
 
 from arm_utility import getDistance
+from embedded_perturbation import generatePerturbedXYZ
 
 # Insert the bee analysis repository into the path so that the python modules of the git submodule
 # can be used properly.
@@ -51,6 +52,12 @@ def main():
         default=False,
         action='store_true',
         help='Print out features to the csv from the last feature layer.')
+    parser.add_argument(
+        '--show_perts',
+        required=False,
+        default=False,
+        action='store_true',
+        help='Also print perturbed xyz locations as the last three columns.')
 
     args = parser.parse_args()
 
@@ -131,9 +138,9 @@ def main():
         all_xyz_locations_and_features = []
 
     # Print out the header
-    header = "sample, target distance, current x, current y, current z, target x, target y, "
-    "target z, current waist, current shoulder, current elbow, current wrist_angle, "
-    "current wrist_rotate, target waist, target shoulder, target elbow, target wrist_angle, "
+    header = "sample, target distance, current x, current y, current z, target x, target y, "\
+    "target z, current waist, current shoulder, current elbow, current wrist_angle, "\
+    "current wrist_rotate, target waist, target shoulder, target elbow, target wrist_angle, "\
     "target wrist_rotate"
     if args.model is not None:
         header += ", dnn x, dnn y, dnn z, dnn waist, dnn shoulder, dnn elbow, dnn wrist_angle, dnn wrist_rotate"
@@ -162,6 +169,11 @@ def main():
         current_position = computeGripperPosition(current)
         target_position = computeGripperPosition(target)
         distance = getDistance(current_position, target_position)
+
+        # TODO FIXME Debugging
+        # current_xyz = current_position
+        # target_xyz = target_position
+
         csv_line = ("{}" + ", {:.6f}" * 17).format(i, distance, *list(current_xyz), *list(target_xyz),
                 *list(current), *list(target))
         if args.model is not None:
@@ -212,6 +224,14 @@ def main():
                         img.save("dataset_features_{}_{}.png".format(batch_num, layer_i))
                 # Delete the feature maps to force memory cleanup
                 del maps
+
+        if args.show_perts:
+            if 0. == distance:
+                sys.stderr.write("found 0 distance\n")
+            # Generate perturbed xyz locations
+            perturbed_xyz = generatePerturbedXYZ(current_xyz, target_xyz, distance/math.sqrt(2))
+            csv_line += (", {:.6f}" * 3).format(*list(perturbed_xyz))
+
 
         # Print the completed line for the csv
         print(csv_line)

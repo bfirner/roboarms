@@ -313,7 +313,7 @@ def main():
 
                 # If we exited the previous loop because we encountered a new mark before reaching
                 # the timestamp of the next state (determined by distance) then we need to set a new
-                # next state at the frame before that mark. Walk forward from the current data to
+                # next state at the frame before that mark. Walk backwards from the current data to
                 # the time of the transition
                 if labels['mark'][next_frame] is not None:
                     while next_state_offset > 0 and arm_data.future_records()[next_state_offset]['timestamp'] > video_timestamps[next_frame]:
@@ -365,9 +365,13 @@ def main():
                     # This is the mark of the initial state for this maneuver
                     sample_labels["initial_mark"] = marks[(int(frame_nums[-1]))]
 
+                    # If the next state is at the same location as the current state then don't use it
+                    same_location = sample_labels["current_xyz_position"] == sample_labels["target_xyz_position"]
+
                     # We cannot use this sample if there is no goal for the current motion
                     # Only accept goals in our training list
-                    if (0 == len(args.goals)) or (next_mark is not None and next_mark in args.goals):
+                    goals_satisfied = (0 == len(args.goals)) or (next_mark is not None and next_mark in args.goals)
+                    if not same_location and goals_satisfied:
                         cur_pos = sample_labels["current_xyz_position"]
                         if next_mark is not None:
                             # The goal mark is the one currently being moved towards
