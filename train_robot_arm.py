@@ -42,7 +42,7 @@ from bee_analysis.utility.model_utility import (restoreModelAndState)
 from bee_analysis.utility.train_utility import (LabelHandler, evalEpoch, trainEpoch)
 
 from bee_analysis.models.alexnet import AlexLikeNet
-from bee_analysis.models.bennet import BenNet
+from bee_analysis.models.bennet import BenNet, CompactingBenNet
 from bee_analysis.models.denormalizer import Denormalizer, Normalizer
 from bee_analysis.models.resnet import (ResNet18, ResNet34)
 from bee_analysis.models.resnext import (ResNext18, ResNext34, ResNext50)
@@ -106,7 +106,7 @@ parser.add_argument(
     type=str,
     required=False,
     default="resnext18",
-    choices=["alexnet", "resnet18", "resnet34", "bennet", "resnext50", "resnext34", "resnext18",
+    choices=["alexnet", "resnet18", "resnet34", "bennet", "compactingbennet", "resnext50", "resnext34", "resnext18",
     "convnextxt", "convnextt", "convnexts", "convnextb"],
     help="Model to use for training.")
 parser.add_argument(
@@ -409,6 +409,13 @@ elif 'bennet' == args.modeltype:
     optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.001, nesterov=True)
     milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20]
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
+elif 'compactingbennet' == args.modeltype:
+    net = CompactingBenNet(**model_args).cuda()
+    #optimizer = torch.optim.AdamW(net.parameters(), lr=10e-5)
+    #optimizer = torch.optim.Adam(net.parameters(), lr=10e-3)
+    optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.001, nesterov=True)
+    milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20]
+    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
 elif 'resnext50' == args.modeltype:
     # Model specific arguments
     model_args['expanded_linear'] = True
@@ -585,7 +592,7 @@ if args.evaluate is not None:
                     vector_input = extractVectors(dl_tuple, vector_range).cuda()
 
                 # Visualization masks are not supported with all model types yet.
-                if args.modeltype in ['alexnet', 'bennet', 'resnet18', 'resnet34']:
+                if args.modeltype in ['alexnet', 'bennet', 'compactingbennet', 'resnet18', 'resnet34']:
                     out, mask = net.vis_forward(net_input, vector_input)
                 else:
                     out = net.forward(net_input, vector_input, vector_input)
