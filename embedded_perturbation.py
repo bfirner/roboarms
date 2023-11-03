@@ -78,3 +78,34 @@ def generatePerturbedXYZ(begin_xyz, end_xyz, step_size):
     pert_z = begin_xyz[2] + p_z_slope * slope_scale
 
     return (pert_x, pert_y, pert_z)
+
+
+def perturbEmbedding(features, perturbation, correlations, slopes, noise_profiles):
+    """Perturb the given features to the given perturbation.
+
+    Arguments:
+        features: A feature vector representing a DNN's feature embedding.
+        perturbation: A list of new values for the features, or None for unchanging values
+        correlation: A correlation matrix, from torch.corrcoef. Caller should zero out correlations
+                     for any of the features being perturbed.
+        noise_profiles: Noise profiles for each individual feature. This should have a value for all
+                        features that are not given a value in perturbation.
+    Returns:
+        a new embedding with the same size as features
+    """
+    additions = torch.zeros(features.size())
+    for i, p in enumerate(perturbation):
+        # The delta between the 
+        delta = p - features[i].item()
+        additions[i] = delta
+        # Assume independence between the perturbed features
+        # Note that this may be a terribly wrong assumption
+        for c_idx = correlations.size(1):
+            # TODO FIXME The correlation is normalized (to the range -1 to 1) and needs to be
+            # denormalized with the slope to be used like this.
+            additions[i] += math.abs(correlations[i][c_idx].item()) * delta * slope[i][c_idx]
+
+    for j, noise in enumerate(noise_profiles):
+        additions += random.normalvariate(noise.mean, noise.stddev)
+    return features + additions
+
