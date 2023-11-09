@@ -31,15 +31,19 @@ from torchvision import transforms
 
 from arm_utility import (grepGripperLocationFromTensors)
 
+from embedded_perturbation import (
+        drawNewFeatures, findMultivariateParameters,
+        generatePerturbedXYZ, makeSpherePoints)
+
 # Insert the bee analysis repository into the path so that the python modules of the git submodule
 # can be used properly.
 import sys
 sys.path.append('bee_analysis')
 
-from bee_analysis.utility.dataset_utility import (extractVectors, getImageSize, getVectorSize)
+from bee_analysis.utility.dataset_utility import (decodeUTF8Strings, extractVectors, getImageSize, getVectorSize)
 from bee_analysis.utility.eval_utility import (OnlineStatistics, RegressionResults, WorstExamples)
 from bee_analysis.utility.model_utility import (restoreModelAndState)
-from bee_analysis.utility.train_utility import (LabelHandler, evalEpoch, trainEpoch)
+from bee_analysis.utility.train_utility import (LabelHandler, evalEpoch, trainEpoch, updateWithoutScaler)
 
 from bee_analysis.models.alexnet import AlexLikeNet
 from bee_analysis.models.bennet import BenNet, CompactingBenNet
@@ -115,6 +119,12 @@ parser.add_argument(
     default=False,
     action='store_true',
     help='Set this flag to skip training. Useful to load an already trained model for evaluation.')
+parser.add_argument(
+    '--feature_perturbations',
+    required=False,
+    default=False,
+    action="store_true",
+    help=("Enable feature-space training using feature-space perturbations."))
 parser.add_argument(
     '--evaluate',
     type=str,
@@ -196,6 +206,7 @@ regression_loss = ['L1Loss', 'MSELoss']
 in_frames = args.sample_frames
 decode_strs = []
 label_decode_strs = []
+vector_decode_strs = []
 # The image for a particular frame
 for i in range(in_frames):
     decode_strs.append(f"{i}.png")
@@ -210,6 +221,7 @@ for label_str in args.labels:
 vector_range = slice(label_range.stop, label_range.stop + len(args.vector_inputs))
 for vector_str in args.vector_inputs:
     decode_strs.append(vector_str)
+    vector_decode_strs.append(vector_str)
 
 
 # The loss will be calculated from the distance rather than the joint positions, but if they are not
@@ -413,7 +425,7 @@ elif 'compactingbennet' == args.modeltype:
     net = CompactingBenNet(**model_args).cuda()
     #optimizer = torch.optim.AdamW(net.parameters(), lr=10e-5)
     #optimizer = torch.optim.Adam(net.parameters(), lr=10e-3)
-    optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.001, nesterov=True)
+    optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.01, nesterov=True)
     milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20]
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
 elif 'resnext50' == args.modeltype:
@@ -523,7 +535,7 @@ if not args.no_train:
             print(f"Evaluating epoch {epoch}")
             eval_totals = RegressionResults(size=label_handler.size(), names=label_handler.names())
             evalEpoch(net=net, label_handler=label_handler, eval_stats=eval_totals,
-                    eval_dataloader=eval_dataloader, vector_range=eval_range, train_frames=in_frames,
+                    eval_dataloader=eval_dataloader, vector_range=vector_range, train_frames=in_frames,
                     normalize_images=args.normalize, loss_fn=loss_fn, nn_postprocess=nn_postprocess)
 
         if abs(totals.mean()) < min_err:
@@ -548,6 +560,206 @@ if not args.no_train:
                     'normalize_labels': args.normalize_outputs,
                     },
                 }, (args.outname + ".epoch_{}".format(epoch)))
+
+
+# Feature-space training
+if args.feature_perturbations:
+    # TODO Assuming that xyz position is the only DNN output
+    if "target_xyz_position" in args.labels:
+        dnn_output_to_xyz = lambda out: out[0].tolist()
+    if "current_xyz_position" not in args.vector_inputs:
+        decode_strs.append('current_xyz_position')
+
+    # Loop through the entire training set and calculate the mean values and correlation
+    # coefficients.
+    # TODO
+    net.train()
+
+    feature_dataset = (
+        wds.WebDataset(args.dataset, shardshuffle=False)
+        .shuffle(20000//in_frames, initial=20000//in_frames)
+        .decode("l")
+        .to_tuple(*decode_strs)
+    )
+
+    image_size = getImageSize(args.dataset, decode_strs)
+    print(f"Decoding images of size {image_size}")
+
+    # Use small batches so that the feature fetching step doesn't use up all of the available memory
+    dataloader = torch.utils.data.DataLoader(feature_dataset, num_workers=0, batch_size=1)
+
+    # The features and labels that will be used to create the correlation coefficient laters
+    flat_features_and_gt = []
+    # The target positions will be used to calculate perturbed positions, so store them as well
+    target_positions = []
+    cur_pos_idx = decode_strs.index("current_xyz_position")
+    target_pos_idx = decode_strs.index("target_xyz_position")
+    for batch_num, dl_tuple in enumerate(dataloader):
+        # The image is always the first item
+        image = dl_tuple[0].unsqueeze(1).cuda()
+
+        # The labels aren't actually used in this pass
+        labels = extractVectors(dl_tuple, label_handler.range()).cuda()
+        vector_inputs=None
+        if vector_range.start != vector_range.stop:
+            vector_inputs = extractVectors(dl_tuple, vector_range).cuda()
+
+        # Normalize inputs: input = (input - mean)/stddev
+        if args.normalize:
+            v, m = torch.var_mean(image)
+            image = (image - m) / v
+
+        # Get the network output
+        with torch.no_grad():
+            if 0 < len(args.vector_inputs):
+                output = net(image, vector_inputs.cuda())
+            else:
+                output = net(image)
+
+            if denormalizer is not None:
+                output = denormalizer(output)
+
+            # Fetch the feature maps
+            features = net.forwardToFeatures(image)
+
+            # The current positions need to be stored with their features
+            cur_positions = decodeUTF8Strings(dl_tuple[cur_pos_idx:cur_pos_idx+1])[0]
+            batch_target_positions = decodeUTF8Strings(dl_tuple[target_pos_idx:target_pos_idx+1])[0]
+
+            # Store the features of each item in the batch
+            for b_index in range(features.size(0)):
+                # TODO There's no reason to convert from tensors when these will just go back into
+                # tensors
+                flat_features = features[b_index].tolist()
+                # Store the flattened last layer in the output string if requested
+                # TODO should we use the dnn xyz prediction here, not the true xyz, with the theory
+                # that these are more interpretable by the DNN itself? This would require a current
+                # xyz prediction, as well the target xyz prediction.
+                #dnn_xyz = output[b_index].tolist()
+                target_positions.append(batch_target_positions[b_index].tolist())
+                flat_features_and_gt.append(flat_features + cur_positions[b_index].tolist())
+            # Aggresively clear this from memory in case it is large
+            del features
+
+    # TODO The hard-coded 3 here assumes that the xyz values are the only labels
+    label_size = 3
+
+    # Now find the correlation coefficients and the means of the different features and labels
+    features_and_gt_tensor = torch.tensor(flat_features_and_gt)
+    print("The features and label tensor has size {}".format(features_and_gt_tensor.size()))
+
+    # TODO FIXME Verify that the source and target positions are correct
+
+    # The rotated features_and_gt_tensor is needed to easily take the mean and for the corrcoef
+    # function, which requires variables in rows and observations in columns
+    #rot_features_and_labels = features_and_gt_tensor.rot90(k=1, dims=[1,0])
+    rot_features_and_gt = features_and_gt_tensor.T
+    means = rot_features_and_gt.mean(dim=1)
+    feature_means = means[:-label_size]
+    gt_means = means[-label_size:]
+    #correlations = rot_features_and_gt.corrcoef()
+    
+    # Compute the sample covariance matrix
+    sample_cov_matrix = rot_features_and_gt.cov()
+
+    # Treat the target positions similary to the rest of the data, placing variables in rows and
+    # observations in columns
+    target_positions_tensor = torch.tensor(target_positions)
+
+    pert_optimizer = torch.optim.SGD(net.classifier.parameters(), lr=0.001, momentum=0.5, weight_decay=0.001, nesterov=True)
+
+    # With the means and sample covariance matrix, go back through another training loop
+    # This time we won't load any images, just the source state and the target state.
+    # For each batch, train with some of the original values and add in perturbations as well.
+    # The features and labels are already loaded, so simply go through go through the columns of
+    # data as batches.
+    batch_size = 64
+    for observation_begin in range(0, features_and_gt_tensor.size(0), batch_size):
+        observation_end = min(features_and_gt_tensor.size(0), observation_begin + batch_size)
+
+        # The original training features
+        original_features = features_and_gt_tensor[observation_begin:observation_end, :-label_size]
+        # Call generatePerturbedXYZ to generate new training points that are in an orthogonal
+        # direction from the begin->end vector
+        begin_xyzs = features_and_gt_tensor[observation_begin:observation_end, -label_size:]
+        end_xyzs = target_positions_tensor[observation_begin:observation_end]
+
+        distances = torch.pow(end_xyzs - begin_xyzs, 2).sum(dim=1, keepdim=False).sqrt()
+
+        # Create new training targets
+        # Then use findMultivariateParameters to find the distribution for features with the new
+        # training targets
+        new_end_xyzs = []
+        new_features = []
+        # The number of draws to perform for each generates xyz location
+        new_data_draws = 1
+        new_begin_xyzs = []
+        for idx in range(begin_xyzs.size(0)):
+            # Generate a new xyz that maintains the same distance to the endpoint.
+            #step_size = distances[idx].item()/math.sqrt(2)
+            # TODO experimenting with a really large step
+            step_size = 5*distances[idx].item()
+            new_begin_xyz = torch.tensor(generatePerturbedXYZ(begin_xyzs[idx], end_xyzs[idx], step_size))
+            # TODO Testing with spheres
+            #new_begin_xyz = makeSpherePoints(point_means=gt_means,
+            #    sample_points=begin_xyzs[idx:idx+1], start_radius=0.015)[0]
+            # Calculate the mean vector and covariance matrix of the features dependent upon this
+            # new begin location
+            mean_vector, cov_matrix = findMultivariateParameters(
+                new_begin_xyz, sample_cov_matrix, feature_means, gt_means)
+
+            # Generate new_data_draws random samples from the distribution
+            # TODO FIXME Just trying the means for now
+            drawn_features = drawNewFeatures(mean_vector, cov_matrix, num_draws=new_data_draws)
+            for draw in range(new_data_draws):
+                new_features.append(drawn_features[draw:draw+1])
+                #new_features.append(feature_means.expand(1, -1))
+                new_begin_xyzs.append(new_begin_xyz.expand(1, -1))
+                # The end target remains the same
+                new_end_xyzs.append(end_xyzs[idx].expand(1, -1))
+                print("pcoords" + (", {}"*12).format(*begin_xyzs[idx].tolist(),
+                    *end_xyzs[idx].tolist(), *new_begin_xyzs[-1][0].tolist(), *new_end_xyzs[-1][0].tolist()))
+
+        # Combine the original and perturbed features and targets to create the training batch
+        training_labels = torch.cat((end_xyzs, *new_end_xyzs), dim=0)
+        new_features = torch.cat(new_features, dim=0)
+        training_features = torch.cat((original_features, new_features), dim=0)
+
+        # TODO FIXME Vector inputs
+
+        # If the current xyz position is also a training target, add it into the labels tensor.
+        if "current_xyz_position" in args.labels:
+            # repeat_interleave the current positions into the labels as well.
+            training_labels = torch.cat(
+                (training_labels,
+                    torch.cat((begin_xyzs, *new_begin_xyzs), dim=0)), dim=1)
+
+        # Send the new batches forward and backward.
+        out, loss = updateWithoutScaler(loss_fn=loss_fn, net=net.classifier,
+                image_input=training_features.cuda(), vector_input=None,
+                labels=label_handler.preprocess(training_labels.cuda()), optimizer=pert_optimizer)
+        # TODO FIXME record loss, etc. Make sure that things are stable.
+        print("loss at observation {} is {}".format(observation_begin, loss))
+    torch.save({
+        "model_dict": net.state_dict(),
+        "optim_dict": optimizer.state_dict(),
+        "py_random_state": random.getstate(),
+        "np_random_state": numpy.random.get_state(),
+        "torch_rng_state": torch.get_rng_state(),
+        "denormalizer_state_dict": denormalizer.state_dict() if denormalizer is not None else None,
+        "normalizer_state_dict": normalizer.state_dict() if normalizer is not None else None,
+        # Store some metadata to make it easier to recreate and use this model
+        "metadata": {
+            'modeltype': args.modeltype,
+            'labels': args.labels,
+            'vector_inputs': args.vector_inputs,
+            'convert_idx_to_classes': False,
+            'label_size': label_handler.size(),
+            'model_args': model_args,
+            'normalize_images': args.normalize,
+            'normalize_labels': args.normalize_outputs,
+            },
+        }, args.outname + ".perturbed")
 
 
 # TODO FIXME Move this evaluation step into the evaluation function as well.
