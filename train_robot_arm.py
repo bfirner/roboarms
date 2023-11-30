@@ -43,11 +43,13 @@ sys.path.append('bee_analysis')
 from bee_analysis.utility.dataset_utility import (decodeUTF8Strings, extractVectors, getImageSize, getVectorSize)
 from bee_analysis.utility.eval_utility import (OnlineStatistics, RegressionResults, WorstExamples)
 from bee_analysis.utility.model_utility import (restoreModelAndState)
-from bee_analysis.utility.train_utility import (LabelHandler, evalEpoch, trainEpoch, updateWithoutScaler)
+from bee_analysis.utility.train_utility import (LabelHandler, evalEpoch, trainEpoch,
+        updateWithoutScalerOriginal)
 
 from bee_analysis.models.alexnet import AlexLikeNet
 from bee_analysis.models.bennet import BenNet, CompactingBenNet
-from bee_analysis.models.denormalizer import Denormalizer, Normalizer
+from bee_analysis.models.dragonfly import DFNet
+from bee_analysis.models.modules import Denormalizer, Normalizer
 from bee_analysis.models.resnet import (ResNet18, ResNet34)
 from bee_analysis.models.resnext import (ResNext18, ResNext34, ResNext50)
 from bee_analysis.models.convnext import (ConvNextExtraTiny, ConvNextTiny, ConvNextSmall, ConvNextBase)
@@ -110,7 +112,7 @@ parser.add_argument(
     type=str,
     required=False,
     default="resnext18",
-    choices=["alexnet", "resnet18", "resnet34", "bennet", "compactingbennet", "resnext50", "resnext34", "resnext18",
+    choices=["alexnet", "resnet18", "resnet34", "bennet", "compactingbennet", "dragonfly", "resnext50", "resnext34", "resnext18",
     "convnextxt", "convnextt", "convnexts", "convnextb"],
     help="Model to use for training.")
 parser.add_argument(
@@ -393,6 +395,8 @@ model_args = {
     'in_dimensions': (in_frames, image_size[1], image_size[2]),
     'out_classes': label_handler.size(),
 }
+# True to use a lower learning rate for the first epoch
+warmup_epoch = True
 if 0 < vector_input_size:
     model_args['vector_input_size'] = vector_input_size
 
@@ -425,7 +429,12 @@ elif 'compactingbennet' == args.modeltype:
     net = CompactingBenNet(**model_args).cuda()
     #optimizer = torch.optim.AdamW(net.parameters(), lr=10e-5)
     #optimizer = torch.optim.Adam(net.parameters(), lr=10e-3)
-    optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.01, nesterov=True)
+    optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.001, nesterov=True)
+    milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20]
+    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
+elif 'dragonfly' == args.modeltype:
+    net = DFNet(**model_args).cuda()
+    optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.001, nesterov=True)
     milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20]
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
 elif 'resnext50' == args.modeltype:
@@ -470,6 +479,10 @@ elif 'convnextb' == args.modeltype:
     optimizer = torch.optim.SGD(net.parameters(), lr=10e-2, weight_decay=10e-4, momentum=0.9)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[2,5,12], gamma=0.2)
 print(f"Model is {net}")
+
+if warmup_epoch:
+    for group in optimizer.param_groups:
+        group['lr'] *= 0.1
 
 # See if the model weights and optimizer state should be restored.
 if args.resume_from is not None:
@@ -529,6 +542,11 @@ if not args.no_train:
                 'normalize_labels': args.normalize_outputs,
                 },
             }, args.outname)
+
+        # If we were doing a warmup epoch then revert to the original learning rate now.
+        if 0 == epoch and warmup_epoch:
+            for group in optimizer.param_groups:
+                group['lr'] *= 10
 
         # Validation step if requested
         if args.evaluate is not None:
@@ -661,12 +679,15 @@ if args.feature_perturbations:
     
     # Compute the sample covariance matrix
     sample_cov_matrix = rot_features_and_gt.cov()
+    print("The covariance matrix is:")
+    for row in range(sample_cov_matrix.size(0)):
+        print(sample_cov_matrix[row])
 
     # Treat the target positions similary to the rest of the data, placing variables in rows and
     # observations in columns
     target_positions_tensor = torch.tensor(target_positions)
 
-    pert_optimizer = torch.optim.SGD(net.classifier.parameters(), lr=0.001, momentum=0.5, weight_decay=0.001, nesterov=True)
+    pert_optimizer = torch.optim.SGD(net.classifier.parameters(), lr=0.002, momentum=0.0, weight_decay=0.000, nesterov=False)
 
     # With the means and sample covariance matrix, go back through another training loop
     # This time we won't load any images, just the source state and the target state.
@@ -674,72 +695,78 @@ if args.feature_perturbations:
     # The features and labels are already loaded, so simply go through go through the columns of
     # data as batches.
     batch_size = 64
-    for observation_begin in range(0, features_and_gt_tensor.size(0), batch_size):
-        observation_end = min(features_and_gt_tensor.size(0), observation_begin + batch_size)
+    for epoch in range(1):
+        for observation_begin in range(0, features_and_gt_tensor.size(0), batch_size):
+            observation_end = min(features_and_gt_tensor.size(0), observation_begin + batch_size)
 
-        # The original training features
-        original_features = features_and_gt_tensor[observation_begin:observation_end, :-label_size]
-        # Call generatePerturbedXYZ to generate new training points that are in an orthogonal
-        # direction from the begin->end vector
-        begin_xyzs = features_and_gt_tensor[observation_begin:observation_end, -label_size:]
-        end_xyzs = target_positions_tensor[observation_begin:observation_end]
+            # The original training features
+            original_features = features_and_gt_tensor[observation_begin:observation_end, :-label_size]
+            # Call generatePerturbedXYZ to generate new training points that are in an orthogonal
+            # direction from the begin->end vector
+            begin_xyzs = features_and_gt_tensor[observation_begin:observation_end, -label_size:]
+            end_xyzs = target_positions_tensor[observation_begin:observation_end]
 
-        distances = torch.pow(end_xyzs - begin_xyzs, 2).sum(dim=1, keepdim=False).sqrt()
+            distances = torch.pow(end_xyzs - begin_xyzs, 2).sum(dim=1, keepdim=False).sqrt()
 
-        # Create new training targets
-        # Then use findMultivariateParameters to find the distribution for features with the new
-        # training targets
-        new_end_xyzs = []
-        new_features = []
-        # The number of draws to perform for each generates xyz location
-        new_data_draws = 1
-        new_begin_xyzs = []
-        for idx in range(begin_xyzs.size(0)):
-            # Generate a new xyz that maintains the same distance to the endpoint.
-            #step_size = distances[idx].item()/math.sqrt(2)
-            # TODO experimenting with a really large step
-            step_size = 5*distances[idx].item()
-            new_begin_xyz = torch.tensor(generatePerturbedXYZ(begin_xyzs[idx], end_xyzs[idx], step_size))
-            # TODO Testing with spheres
-            #new_begin_xyz = makeSpherePoints(point_means=gt_means,
-            #    sample_points=begin_xyzs[idx:idx+1], start_radius=0.015)[0]
-            # Calculate the mean vector and covariance matrix of the features dependent upon this
-            # new begin location
-            mean_vector, cov_matrix = findMultivariateParameters(
-                new_begin_xyz, sample_cov_matrix, feature_means, gt_means)
+            # Create new training targets
+            # Then use findMultivariateParameters to find the distribution for features with the new
+            # training targets
+            new_end_xyzs = []
+            new_features = []
+            # The number of draws to perform for each generates xyz location
+            new_data_draws = 1
+            new_begin_xyzs = []
+            for idx in range(begin_xyzs.size(0)):
+                # Generate a new xyz that maintains the same distance to the endpoint.
+                #step_size = distances[idx].item()/math.sqrt(2)
+                # TODO experimenting with a really large step
+                #step_size = 3*distances[idx].item() + 0.001
+                step_size = random.uniform(1,3)*distances[idx].item() + 0.001
+                new_begin_xyz = torch.tensor(generatePerturbedXYZ(begin_xyzs[idx], end_xyzs[idx], step_size))
+                # TODO Testing with spheres
+                #new_begin_xyz = makeSpherePoints(point_means=gt_means,
+                #    sample_points=begin_xyzs[idx:idx+1], start_radius=0.015)[0]
+                # Calculate the mean vector and covariance matrix of the features dependent upon this
+                # new begin location
+                mean_vector, cov_matrix = findMultivariateParameters(
+                    new_begin_xyz, sample_cov_matrix, feature_means, gt_means)
 
-            # Generate new_data_draws random samples from the distribution
-            # TODO FIXME Just trying the means for now
-            drawn_features = drawNewFeatures(mean_vector, cov_matrix, num_draws=new_data_draws)
-            for draw in range(new_data_draws):
-                new_features.append(drawn_features[draw:draw+1])
-                #new_features.append(feature_means.expand(1, -1))
-                new_begin_xyzs.append(new_begin_xyz.expand(1, -1))
-                # The end target remains the same
-                new_end_xyzs.append(end_xyzs[idx].expand(1, -1))
-                print("pcoords" + (", {}"*12).format(*begin_xyzs[idx].tolist(),
-                    *end_xyzs[idx].tolist(), *new_begin_xyzs[-1][0].tolist(), *new_end_xyzs[-1][0].tolist()))
+                # Generate new_data_draws random samples from the distribution
+                # TODO FIXME Just trying the means for now
+                drawn_features = drawNewFeatures(mean_vector, cov_matrix, num_draws=new_data_draws)
+                for draw in range(new_data_draws):
+                    new_features.append(drawn_features[draw:draw+1])
+                    #new_features.append(feature_means.expand(1, -1))
+                    new_begin_xyzs.append(new_begin_xyz.expand(1, -1))
+                    # The end target remains the same
+                    new_end_xyzs.append(end_xyzs[idx].expand(1, -1))
 
-        # Combine the original and perturbed features and targets to create the training batch
-        training_labels = torch.cat((end_xyzs, *new_end_xyzs), dim=0)
-        new_features = torch.cat(new_features, dim=0)
-        training_features = torch.cat((original_features, new_features), dim=0)
+            # Combine the original and perturbed features and targets to create the training batch
+            training_labels = torch.cat((end_xyzs, *new_end_xyzs), dim=0)
+            training_start_xyzs = torch.cat((begin_xyzs, *new_begin_xyzs), dim=0)
+            new_features = torch.cat(new_features, dim=0)
+            training_features = torch.cat((original_features, new_features), dim=0)
 
-        # TODO FIXME Vector inputs
+            # For debugging
+            for label_idx in range(training_labels.size(0)):
+                print("pcoords" + (", {}"*6).format(*training_start_xyzs[label_idx].tolist(),
+                    *training_labels[label_idx].tolist()))
 
-        # If the current xyz position is also a training target, add it into the labels tensor.
-        if "current_xyz_position" in args.labels:
-            # repeat_interleave the current positions into the labels as well.
-            training_labels = torch.cat(
-                (training_labels,
-                    torch.cat((begin_xyzs, *new_begin_xyzs), dim=0)), dim=1)
+            # TODO FIXME Vector inputs
 
-        # Send the new batches forward and backward.
-        out, loss = updateWithoutScaler(loss_fn=loss_fn, net=net.classifier,
-                image_input=training_features.cuda(), vector_input=None,
-                labels=label_handler.preprocess(training_labels.cuda()), optimizer=pert_optimizer)
-        # TODO FIXME record loss, etc. Make sure that things are stable.
-        print("loss at observation {} is {}".format(observation_begin, loss))
+            # If the current xyz position is also a training target, add it into the labels tensor.
+            if "current_xyz_position" in args.labels:
+                # repeat_interleave the current positions into the labels as well.
+                training_labels = torch.cat(
+                    (training_labels,
+                        torch.cat((begin_xyzs, *new_begin_xyzs), dim=0)), dim=1)
+
+            # Send the new batches forward and backward.
+            out, loss = updateWithoutScalerOriginal(loss_fn=loss_fn, net=net.classifier,
+                    image_input=training_features.cuda(), vector_input=None,
+                    labels=label_handler.preprocess(training_labels.cuda()), optimizer=pert_optimizer)
+            # TODO FIXME record loss, etc. Make sure that things are stable.
+            print("loss at observation {} is {}".format(observation_begin, loss))
     torch.save({
         "model_dict": net.state_dict(),
         "optim_dict": optimizer.state_dict(),

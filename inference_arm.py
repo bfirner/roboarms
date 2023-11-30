@@ -13,6 +13,7 @@ import rclpy
 import sys
 import time
 import torch
+import yaml
 
 from queue import Queue
 from threading import Event, Lock, Thread
@@ -383,7 +384,7 @@ def main():
         type=str,
         required=False,
         default="alexnet",
-        choices=["alexnet", "resnet18", "resnet34", "bennet", "resnext50", "resnext34", "resnext18",
+        choices=["alexnet", "resnet18", "resnet34", "bennet", "compactingbennet", "dragonfly", "resnext50", "resnext34", "resnext18",
         "convnextxt", "convnextt", "convnexts", "convnextb"],
         help="Model to use for training.")
     parser.add_argument(
