@@ -3,9 +3,12 @@
 
 
 import math
-import rclpy
 import torch
 import yaml
+
+# Ros includes
+import rclpy
+from sensor_msgs.msg import JointState
 
 from interbotix_common_modules.angle_manipulation import angle_manipulation as ang
 from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
@@ -58,8 +61,7 @@ def converge(initial_joints, increment_vector, value_function, value_target, err
     # Return the solution
     return new_joints
 
-
-def rSolver(r_value, z_value, segment_lengths=[104, 158, 147, 175]):
+def oldrSolver(r_value, z_value, segment_lengths=[0.104, 0.158, 0.147, 0.175]):
     """Solve to joint positions given a desired 'r' value in polar coordinates.
 
     Will stay close to the given z_value (vertical offset) for the tip of the arm.
@@ -73,8 +75,8 @@ def rSolver(r_value, z_value, segment_lengths=[104, 158, 147, 175]):
     Returns:
         returns tuple of joint values
     """
-    # Get within 1.0mm of the desired location
-    error_bound = 1.0
+    # Get within 1.0mm of the desired location (which is 0.001m)
+    error_bound = 0.001
     # The lengths of segments (or effective segments) that are moved by the joints, in mm
     segment_G = segment_lengths[0]    # Height of the pedestal upon which theta1 rotates
     segment_C = segment_lengths[1]    # Effective length from theta1 to theta2
@@ -96,7 +98,7 @@ def rSolver(r_value, z_value, segment_lengths=[104, 158, 147, 175]):
     z_error = z_value - current_z
     # TODO Proper error handling
     # Don't request a position behind the starting arm position
-    assert current_r <= r_value
+    assert r_value <= current_r
 
     # Iteratively solve because we're so lazy
     # The steps will be:
@@ -129,8 +131,9 @@ def rSolver(r_value, z_value, segment_lengths=[104, 158, 147, 175]):
         sign = math.copysign(1.0, r_error)
         current_joints = converge(
             initial_joints = current_joints,
-            # The last joint increases to reduce z when the other joints are 0.
-            increment_vector = [0.1 * sign, -0.05 * sign, -0.05 * sign],
+            # The first joint increases to increase x as long as it is below math.pi/2
+            # This curls the arm forward
+            increment_vector = [0.1 * sign, -0.05 * sign, -(current_joints[2]/20.) * sign],
             value_function = rOffset,
             value_target = next_r,
             error_bound = error_bound)
@@ -150,6 +153,7 @@ def rSolver(r_value, z_value, segment_lengths=[104, 158, 147, 175]):
         current_joints = converge(
             initial_joints = current_joints,
             # The last joint increases to reduce z when the other joints are 0.
+            # This lefts the wrist
             increment_vector = [0.0, 0.0, math.copysign(0.1, -z_error)],
             value_function = zOffset,
             value_target = next_z,
@@ -162,8 +166,210 @@ def rSolver(r_value, z_value, segment_lengths=[104, 158, 147, 175]):
 
     return current_joints
 
+def rSolver(r_value, z_value, segment_lengths=[0.104, 0.158, 0.147, 0.175]):
+    """Solve to joint positions given a desired 'r' value in polar coordinates.
+
+    Will stay close to the given z_value (vertical offset) for the tip of the arm.
+
+    Works for the px150 robot arm.
+
+    Arguments:
+        r_value               (float): Desired radius extension
+        z_value               (float): Desired z offset
+        segment_lengths (List[float]): Lengths of the robot segments, in mm
+    Returns:
+        returns tuple of joint values
+    """
+    # Get within 1.0mm of the desired location (which is 0.001m)
+    error_bound = 0.001
+    # Don't bend a joint more than this amount
+    max_bend = math.pi/3.0
+    # The lengths of segments (or effective segments) that are moved by the joints, in mm
+    segment_G = segment_lengths[0]    # Height of the pedestal upon which theta1 rotates
+    segment_C = segment_lengths[1]    # Effective length from theta1 to theta2
+    segment_D = segment_lengths[2]    # Length from theta2 to theta3
+    segment_H = segment_lengths[3]    # Length of the grasper from theta4
+
+    # Solvers for radius and z positions, in mm
+    def rOffset(theta1, theta2, theta3):
+        return math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H
+    def zOffset(theta1, theta2, theta3):
+        return segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D - math.sin(theta1 + theta2 + theta3)*segment_H
+
+    # First, move the shoulder joint so that the limb is perpendicular to a line going from the
+    # center of the shoulder segment to the target location
+    # This makes a triangle with once side equal to segment_C/2 and the hypotenuse will be
+    # sqrt((segment_G-z_value)**2 + (0-r_value)**2).
+    # The initial shoulder angle should thus be: math.acos((segment_C/2.) / hypotenuse)
+    hypotenuse = math.sqrt((segment_G-z_value)**2 + (0-r_value)**2)
+    initial_shoulder_angle = math.acos((segment_C/2.) / hypotenuse)
+    theta1 = initial_shoulder_angle
+    # Don't bend past the maximum
+    if theta1 > max_bend:
+        theta1 = max_bend - 10e-5
+    elif theta1 < -max_bend:
+        theta1 = -max_bend + 10e-5
+    theta2 = 0
+    theta3 = 0
+
+    def shoulderDistance(theta1):
+        shoulder_r = math.sin(theta1)*segment_C
+        shoulder_z = segment_G + math.cos(theta1)*segment_C
+        return math.sqrt((shoulder_r - r_value)**2 + (shoulder_z - z_value)**2)
+
+    def elbowDistance(theta1, theta2):
+        elbow_r = math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D
+        elbow_z = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D
+        return math.sqrt((elbow_r - r_value)**2 + (elbow_z - z_value)**2)
+
+    def handDistance(theta1, theta2, theta3):
+        hand_r = math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta1 + theta2 + theta3)*segment_H
+        hand_z = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D - math.sin(theta1 + theta2 + theta3)*segment_H
+        return math.sqrt((hand_r - r_value)**2 + (hand_z - z_value)**2)
+
+    # Search for the correct position starting with this increment
+    increment = 0.1
+
+    # Find the direction the shoulder will need to bend.
+    # If the elbow and wrist segments are less than the distance the elbow will need to bend
+    # forward, and if they are greater than the distance the elbow will need to bend backwards
+    # Adjust theta1 until it is as the right distance so that the rest of the arm will touch the
+    # point
+    distance = shoulderDistance(theta1) - (segment_D + segment_H)
+    shoulder_sign = math.copysign(1.0, distance)
+
+    while abs(distance) > error_bound and abs(theta1) < max_bend and abs(increment) > 10e-5:
+        new_distance = shoulderDistance(theta1 + shoulder_sign*increment) - (segment_D + segment_H)
+
+        # See if we've gone too far. If not, keep the new value and continue
+        new_sign = math.copysign(1.0, new_distance)
+        if new_sign != shoulder_sign or abs(theta1 + shoulder_sign*increment) >= max_bend:
+            increment = increment / 10.0
+        else:
+            theta1 = theta1 + shoulder_sign*increment
+            distance = new_distance
+
+    # Verify that we converged. If we didn't, then we'll need to make an adjustment by adjusting the
+    # elbow instead of the shoulder. This can happen if the target is very close and segment_D +
+    # segment_H > segment_C
+    if abs(distance) < error_bound:
+        # Now solve for theta2
+        # The hypotenuse of the triangle is the distance. Grab the z distance as well, and plug that
+        # ratio into the math.acos function to get the angle from the end of the shoulder. Then
+        # remove the angles from theta1 to get the angle for theta2.
+        # Subtract from math.pi/2 to be relative to the joint rather than the perpendicular line to
+        # the ground from the joint.
+        shoulder_z_offset = segment_G + math.cos(theta1)*segment_C
+        z_distance = shoulder_z_offset - z_value
+        angle_from_shoulder_end = math.acos(z_distance / shoulderDistance(theta1))
+        theta2 = math.pi/2 - angle_from_shoulder_end - theta1
+        theta3 = 0
+        # QED
+    else:
+        # We repeat the previous algorithm, but now changing theta2 while theta1 remains fixed.
+        distance = elbowDistance(theta1, theta2) - segment_H
+        elbow_sign = math.copysign(1.0, distance)
+
+        increment = 0.1
+        while abs(distance) > error_bound and abs(theta2) < max_bend and abs(increment) > 10e-5:
+            new_distance = elbowDistance(theta1, theta2 + elbow_sign*increment) - segment_H
+
+            # See if we've gone too far. If not, keep the new value and continue
+            new_sign = math.copysign(1.0, new_distance)
+            if new_sign != elbow_sign or abs(theta2 + elbow_sign*increment) >= max_bend:
+                increment = increment / 10.0
+            else:
+                theta2 = theta2 + elbow_sign*increment
+                distance = new_distance
+
+        # If this failed then we are out of luck
+        assert distance <= error_bound
+
+        # Now solve for theta3
+        # The hypotenuse of the triangle is the distance. Grab the z distance and plug that ratio
+        # into the math.acos function to get the angle from the end of the elbow. Then remove the
+        # angles from theta1 and theta2 to get the angle for theta3.
+        elbow_z_offset = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D
+        z_distance = elbow_z_offset - z_value
+        angle_from_elbow_end = math.acos(z_distance / elbowDistance(theta1, theta2))
+        elbow_r = math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D
+        theta3 = (math.pi/2 - angle_from_elbow_end) - theta1 - theta2
+        # QED
+
+    # Return the result
+    return [theta1, theta2, theta3]
+
+def XYZToRThetaZ(x, y, z):
+    """Convert x,y,z coordinates to [r,theta,z]."""
+    r = math.sqrt(x**2 + y**2)
+    theta = math.atan(y/x)
+    return [r, theta, z]
+
+def RThetaZtoXYZ(r, theta, z):
+    """Convert r, theta, z coordinates to [x,y,z]."""
+    x = math.cos(theta) * r
+    y = math.sin(theta) * r
+    return [x, y, z]
+
+def interpretRTZPrediction(r, theta, z, threshold, prediction):
+    """Interpret a 10 value prediction from a DNN.
+
+    Arguments:
+        r: The current value of r
+        theta: The current value of theta
+        z: The current values of z
+        threshold: The movement distance during dataprep. Outputs are true if movement >=0.25*threshold.
+        prediction: The 10 element prediction from a DNN.
+    Returns:
+        [r,theta,z]
+    """
+    # There are a total of 10 outputs: 2 for r, 2 for z, and 6 for theta
+
+    out_r = r
+    out_theta = theta
+    out_z = z
+
+    # The first two outputs should be 1 if:
+    # Current position r is more than the movement threshold less than the target r
+    # Current position r is more than the movement threshold greater than the target r
+    if 0.5 < prediction[0]:
+        out_r += 0.25 * threshold
+    if 0.5 < prediction[1]:
+        out_r -= 0.25 * threshold
+    # Notice that is both prediction[0] and prediction[1] are > 0.5 then out_r will still be r.
+
+
+    # The second two outputs should be true if:
+    # Current position z is more than the movement threshold less than the target z
+    # Current position z is more than the movement threshold greater than the target z
+    if 0.5 < prediction[2]:
+        out_z += 0.25 * threshold
+    if 0.5 < prediction[3]:
+        out_z -= 0.25 * threshold
+    # The next three outputs are true if:
+    # Current position theta is more than the given threshold less than the target theta
+    # Current position theta is more than the given threshold greater than the target theta
+    # Where theta is broken into slices of math.pi/10, math.pi/30, and math.pi/100
+    if prediction[4] > 0.5:
+        # 6 degrees
+        out_theta += math.pi/30.
+    elif prediction[5] > 0.5:
+        # 1.8 degrees
+        out_theta += math.pi/100.
+    elif prediction[6] > 0.5:
+        # 0.6 degrees
+        out_theta += math.pi/300.
+    if prediction[7] > 0.5:
+        out_theta -= math.pi/30.
+    elif prediction[8] > 0.5:
+        out_theta -= math.pi/100.
+    elif prediction[9] > 0.5:
+        out_theta -= math.pi/300.
+
+    return [out_r, out_theta, out_z]
+
 # TODO These names are confusing (computeGripperPosition and getGripperPosition)
-def computeGripperPosition(positions):
+def computeGripperPosition(positions, segment_lengths=[0.104, 0.158, 0.147, 0.175]):
     """Get the x,y,z position of the gripper relative to the point under the waist in meters.
 
     Works for the px150 robot arm.
@@ -184,15 +390,15 @@ def computeGripperPosition(positions):
     theta3 = positions[3]
     # The lengths of segments (or effective segments) that are moved by the previous joints,
     # in mm
-    segment_G = 104    # Height of the pedestal upon which theta1 rotates
-    segment_C = 158    # Effective length from theta1 to theta2
-    segment_D = 147    # Length from theta2 to theta3
-    segment_H = 175    # Length of the grasper from theta4
+    segment_G = segment_lengths[0]    # Height of the pedestal upon which theta1 rotates
+    segment_C = segment_lengths[1]    # Effective length from theta1 to theta2
+    segment_D = segment_lengths[2]    # Length from theta2 to theta3
+    segment_H = segment_lengths[3]    # Length of the grasper from theta4
     arm_x = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.cos(theta0)
     arm_y = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.sin(theta0)
     arm_z = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D - math.sin(theta1 + theta2 + theta3)*segment_H
     # Return the x,y,z end effector coordinates in meters
-    return (arm_x/1000., arm_y/1000., arm_z/1000.)
+    return (arm_x, arm_y, arm_z)
 
     #model_generator = getattr(mrd, 'px150')
     #robot_model = model_generator()
@@ -206,7 +412,7 @@ def computeGripperPosition(positions):
     #return (T[0][-1], T[1][-1], T[2][-2])
 
 
-def getGripperPosition(robot_model, arm_record):
+def getGripperPosition(robot_model, arm_record, segment_lengths=[0.104, 0.158, 0.147, 0.175]):
     """Get the x,y,z position of the gripper relative to the point under the waist in meters.
 
     This is basically the same as the get_ee_pose function for an interbotix arm, but takes in an
@@ -234,7 +440,7 @@ def getGripperPosition(robot_model, arm_record):
         arm_record['position'][arm_record['name'].index('elbow')],
         arm_record['position'][arm_record['name'].index('wrist_angle')],
     ]
-    return computeGripperPosition(joint_positions)
+    return computeGripperPosition(joint_positions, segment_lengths)
 
 
 def grepGripperLocationFromTensors(positions):
@@ -329,7 +535,6 @@ def getCalibrationDiff(manip_yaml, puppet_yaml) -> dict:
     manip_values = {}
     puppet_values = {}
 
-    print("two files are {} and {}".format(manip_yaml, puppet_yaml))
     with open(manip_yaml, 'r') as data:
         manip_values = yaml.safe_load(data)
 
@@ -391,6 +596,11 @@ class ArmReplay(InterbotixManipulatorXS):
                 self.corrections[joint_idx] = corrections[joint_name]
         print("Joint position corrections from calibration are {}".format(self.corrections))
 
+        self.calibrated_joint_publisher = self.core.create_publisher(
+            msg_type=JointState,
+            topic="/{}/calibrated_joint_states".format(puppet_name),
+            qos_profile=1)
+
         self.rate = self.core.create_rate(self.current_loop_rate)
 
         # The actual minimum grip number comes from self.gripper.gripper_info.joint_lower_limits[0],
@@ -398,11 +608,15 @@ class ArmReplay(InterbotixManipulatorXS):
         # straightforward way to change it.
         self.gripper.left_finger_lower_limit -= 0.0012
 
-        # Home position is a non-thunking position, meaning it shouldn't be bumping into anything to
-        # start. Move there in 2 seconds so that it isn't too jerky.
-        self.arm.go_to_home_pose(moving_time = 2.0, blocking = True)
-        self.core.get_logger().info('Arm is in home position {}'.format(self.core.joint_states.position[:5]))
-
+        # Go into a relaxed position that does not stress the joints. Move there in 2 seconds so
+        # that it isn't too jerky.
+        # TODO FIXME From there, go to a relaxed position
+        self.core.get_logger().info('Moving arm to a relaxed position.')
+        relaxed = [0., 0., 0., 0., 0.]
+        relaxed[self.ordered_joint_names.index('shoulder')] = -math.pi/3
+        relaxed[self.ordered_joint_names.index('elbow')] = math.pi/3
+        relaxed[self.ordered_joint_names.index('wrist_angle')] = math.pi/4
+        self.goto(position=relaxed, delay=2.0)
         self.core.get_logger().info('Ready to receive commands.')
 
     def start_robot(self) -> None:
@@ -410,6 +624,12 @@ class ArmReplay(InterbotixManipulatorXS):
             self.start()
             while rclpy.ok():
                 self.rate.sleep()
+                # publish the current calibrated joint state
+                calibrated_state = JointState()
+                calibrated_state.velocity = self.core.joint_states.velocity
+                calibrated_state.effort = self.core.joint_states.effort
+                calibrated_state.position = [self.core.joint_states.position[i] + self.corrections[i] for i in range(len(self.arm.group_info.joint_names))]
+                self.calibrated_joint_publisher.publish(calibrated_state)
                 while not self.position_commands.empty():
                     position, delay = self.position_commands.get()
                     # Finish if a 'None' is provided for the position
@@ -447,3 +667,52 @@ class ArmReplay(InterbotixManipulatorXS):
         succ = self.arm.set_joint_positions(joint_positions=ordered_position[:arm_joints],
             moving_time=delay, blocking=False)
         print("Movement success: {}".format(succ))
+
+#    def _check_joint_limits(self, positions: List[float]) -> bool:
+#        """
+#        Ensure the desired arm group's joint positions are within their limits.
+#
+#        :param positions: the positions [rad] to check
+#        :return: `True` if all positions are within limits; `False` otherwise
+#        """
+#        self.core.get_logger().debug(f'Checking joint limits for {positions=}')
+#        theta_list = [int(elem * 1000) / 1000.0 for elem in positions]
+#        speed_list = [
+#            abs(goal - current) / float(self.moving_time)
+#            for goal, current in zip(theta_list, self.joint_commands)
+#        ]
+#        # check position and velocity limits
+#        for x in range(self.group_info.num_joints):
+#            if not (
+#                self.group_info.joint_lower_limits[x]
+#                <= theta_list[x]
+#                <= self.group_info.joint_upper_limits[x]
+#            ):
+#                return False
+#            if speed_list[x] > self.group_info.joint_velocity_limits[x]:
+#                return False
+#        return True
+#
+#    def _check_single_joint_limit(self, joint_name: str, position: float) -> bool:
+#        """
+#        Ensure a desired position for a given joint is within its limits.
+#
+#        :param joint_name: desired joint name
+#        :param position: desired joint position [rad]
+#        :return: `True` if within limits; `False` otherwise
+#        """
+#        self.core.get_logger().debug(
+#            f'Checking joint {joint_name} limits for {position=}'
+#        )
+#        theta = int(position * 1000) / 1000.0
+#        speed = abs(
+#            theta - self.joint_commands[self.info_index_map[joint_name]]
+#        ) / float(self.moving_time)
+#        ll = self.group_info.joint_lower_limits[self.info_index_map[joint_name]]
+#        ul = self.group_info.joint_upper_limits[self.info_index_map[joint_name]]
+#        vl = self.group_info.joint_velocity_limits[self.info_index_map[joint_name]]
+#        if not (ll <= theta <= ul):
+#            return False
+#        if speed > vl:
+#            return False
+#        return True
