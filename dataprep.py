@@ -20,7 +20,8 @@ import torch
 import webdataset as wds
 import yaml
 
-from arm_utility import (getDistance, computeGripperPosition, getCalibratedJoints, getStateAtNextPosition)
+from arm_utility import (getDistance, computeGripperPosition, getCalibratedJoints,
+        getStateAtNextPosition, XYZToRThetaZ)
 from data_utility import (ArmDataInterpolator, readArmRecords, readLabels, readVideoTimestamps)
 from bee_analysis.utility.video_utility import (getVideoInfo, VideoSampler)
 # These are the robot descriptions to match function calls in the modern robotics package.
@@ -341,6 +342,7 @@ def main():
                         if key == 'position':
                             sample_labels["target_arm_position"] = getCalibratedJoints(next_state, ordered_joint_names, calibration)
                             sample_labels["target_xyz_position"] = list(computeGripperPosition(sample_labels['target_arm_position']))
+                            sample_labels["target_rtz_position"] = XYZToRThetaZ(*sample_labels["target_xyz_position"])
 
                     for key, value in current_data.items():
                         sample_labels["current_{}".format(key)] = value
@@ -351,6 +353,29 @@ def main():
                         if key == 'position':
                             sample_labels["current_arm_position"] = getCalibratedJoints(current_data, ordered_joint_names, calibration)
                             sample_labels["current_xyz_position"] = list(computeGripperPosition(sample_labels['current_arm_position']))
+                            sample_labels["current_rtz_position"] = XYZToRThetaZ(*sample_labels["current_xyz_position"])
+
+                    # Relative movements must be for a value less than the args.prediction_distance
+                    # TODO FIXME We are just going to use 0.25 * args.prediction_distance for r and z.
+                    # Theta will get several flat values: math.pi/10, math.pi/30, math.pi/100
+                    sample_labels["rtz_classifier"] = [1 if value else 0 for value in [
+                        # Current position r is more than the movement threshold less than the target r
+                        0.25 * args.prediction_distance < sample_labels["target_rtz_position"][0] - sample_labels["current_rtz_position"][0],
+                        # Current position r is more than the movement threshold greater than the target r
+                        0.25 * args.prediction_distance < sample_labels["current_rtz_position"][0] - sample_labels["target_rtz_position"][0],
+                        # Current position z is more than the movement threshold less than the target z
+                        0.25 * args.prediction_distance < sample_labels["target_rtz_position"][2] - sample_labels["current_rtz_position"][2],
+                        # Current position z is more than the movement threshold greater than the target z
+                        0.25 * args.prediction_distance < sample_labels["current_rtz_position"][2] - sample_labels["target_rtz_position"][2],
+                        # Current position theta is more than the given threshold less than the target theta
+                        math.pi/30. < sample_labels["target_rtz_position"][1] - sample_labels["current_rtz_position"][1],
+                        math.pi/100. < sample_labels["target_rtz_position"][1] - sample_labels["current_rtz_position"][1],
+                        math.pi/300. < sample_labels["target_rtz_position"][1] - sample_labels["current_rtz_position"][1],
+                        # Current position theta is more than the given threshold greater than the target theta
+                        math.pi/30. < sample_labels["current_rtz_position"][1] - sample_labels["target_rtz_position"][1],
+                        math.pi/100. < sample_labels["current_rtz_position"][1] - sample_labels["target_rtz_position"][1],
+                        math.pi/300. < sample_labels["current_rtz_position"][1] - sample_labels["target_rtz_position"][1],
+                    ]]
 
                     # Find the mark that we are progressing towards from this frame.
                     future_marks = labels['mark'][(int(frame_nums[-1])):]

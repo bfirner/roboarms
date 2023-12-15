@@ -9,7 +9,7 @@ import math
 import torch
 import webdataset as wds
 
-from arm_utility import getDistance
+from arm_utility import getDistance, interpretRTZPrediction, XYZToRThetaZ
 from embedded_perturbation import generatePerturbedXYZ
 
 # Insert the bee analysis repository into the path so that the python modules of the git submodule
@@ -17,7 +17,7 @@ from embedded_perturbation import generatePerturbedXYZ
 import sys
 sys.path.append('bee_analysis')
 
-from arm_utility import computeGripperPosition
+from arm_utility import computeGripperPosition, RThetaZtoXYZ
 from bee_analysis.utility.dataset_utility import decodeUTF8Strings
 from bee_analysis.utility.model_utility import (createModel2, hasNormalizers, restoreModel, restoreNormalizers)
 
@@ -88,13 +88,25 @@ def main():
         decode_strs = ["0.png", *vector_names, *labels]
 
 
+        # A flag that indicates if the conversion function will also need the current coordinates
+        relative_movement = False
         if "target_arm_position" in checkpoint['metadata']['labels']:
             nn_joint_slice = slice(labels.index('target_arm_position'), labels.index('target_arm_position')+5)
             dnn_output_to_xyz = lambda out: computeGripperPosition(out[0,nn_joint_slice].tolist())
         elif "target_xyz_position" in checkpoint['metadata']['labels']:
             dnn_output_to_xyz = lambda out: out[0].tolist()
+        elif "target_rtz_position" in checkpoint['metadata']['labels']:
+            dnn_output_to_xyz = lambda out: RThetaZtoXYZ(*out[0].tolist())
         elif "current_xyz_position" in checkpoint['metadata']['labels']:
             dnn_output_to_xyz = lambda out: out[0].tolist()
+        elif "rtz_classifier" in checkpoint['metadata']['labels']:
+            # Interpreting this output is more complicated than the others since there are multiple
+            # steps. We will just call a utility function from arm_utility
+            # TODO This was a training parameter, it should be pulled from the dataset
+            # Setting the threshold to 1cm here
+            threshold = 0.01
+            dnn_output_to_xyz = lambda x, y, z, out: RThetaZtoXYZ(*interpretRTZPrediction(*XYZToRThetaZ(x, y, z), threshold, out[0].tolist()))
+            relative_movement = True
 
         # The current arm position must be decoded so that it can be in the output data.
         if 'current_arm_position' not in decode_strs:
@@ -189,7 +201,11 @@ def main():
 
             if denormalizer is not None:
                 output = denormalizer(output)
-            dnn_xyz = dnn_output_to_xyz(output)
+            # Onl
+            if not relative_movement:
+                dnn_xyz = dnn_output_to_xyz(output)
+            else:
+                dnn_xyz = dnn_output_to_xyz(*current_xyz, output)
             # Add the DNN predictions to the output line
             if "target_arm_position" in checkpoint['metadata']['labels']:
                 dnn_joint_positions = output[0].tolist()

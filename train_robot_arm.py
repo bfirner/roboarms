@@ -183,7 +183,7 @@ parser.add_argument(
     '--loss_fun',
     required=False,
     default='MSELoss',
-    choices=['L1Loss', 'MSELoss'],
+    choices=['L1Loss', 'MSELoss', 'BCEWithLogitsLoss'],
     type=str,
     help="Loss function to use during training.")
 parser.add_argument(
@@ -204,6 +204,10 @@ numpy.random.seed(0)
 # Later on we will need to change behavior if the loss function is regression rather than
 # classification
 regression_loss = ['L1Loss', 'MSELoss']
+# Output normalization obviously shouldn't be used with one hot vectors and classifiers
+if args.normalize_outputs and args.loss_fun not in regression_loss:
+    print("Error: normalize_outputs should only be true for regression loss.")
+    exit(1)
 
 in_frames = args.sample_frames
 decode_strs = []
@@ -241,6 +245,8 @@ def computeDistanceForLoss(tensor_a, tensor_b):
     return distance
 
 def lossWithDistance(output, labels, loss_fn, joint_range):
+    # TODO Balancing loss with something that has multiple joints is nontrivial
+    # This function will remain in case a good solution is found.
     return loss_fn(output, labels)
 
     # Add the distance loss values to the regular loss values.
@@ -274,10 +280,12 @@ label_names = None
 label_names = []
 for label_idx, out_elem in enumerate(range(label_range.start, label_range.stop)):
     label_elements = getVectorSize(args.dataset, decode_strs, slice(out_elem, out_elem+1))
+    # TODO Not being used, not because it isn't a good idea, but because it is very difficult to
+    # figure out how to balance loss across multiple joints of a robot arm
     # Change the loss function to accommodate calculating distance from the joints
-    if 'target_arm_position' == args.labels[label_idx]:
-        joint_range = slice(len(label_names), len(label_names) + label_elements)
-        loss_fn = functools.partial(lossWithDistance, loss_fn=getattr(torch.nn, args.loss_fun)(), joint_range=joint_range)
+    #if 'target_arm_position' == args.labels[label_idx]:
+    #    joint_range = slice(len(label_names), len(label_names) + label_elements)
+    #    loss_fn = functools.partial(lossWithDistance, loss_fn=getattr(torch.nn, args.loss_fun)(), joint_range=joint_range)
 
     # Give this output the label name directly or add a number if multiple outputs come from
     # this label
@@ -337,7 +345,10 @@ if normalizer is not None:
 # Network outputs may need to be postprocessed for evaluation if some postprocessing is being done
 # automatically by the loss function.
 # Use an identify function unless normalization is being used.
-if denormalizer is None:
+if 'BCEWithLogitsLoss' == args.loss_fun:
+    nn_postprocess = torch.nn.Sigmoid()
+    # Note that a classifier task could not have used normalization
+elif denormalizer is None:
     nn_postprocess = lambda x: x
 else:
     nn_postprocess = lambda labels: denormalizer(labels)
@@ -422,14 +433,16 @@ elif 'bennet' == args.modeltype:
     net = BenNet(**model_args).cuda()
     #optimizer = torch.optim.AdamW(net.parameters(), lr=10e-5)
     #optimizer = torch.optim.Adam(net.parameters(), lr=10e-3)
-    optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.001, nesterov=True)
+    optimizer = torch.optim.SGD(net.parameters(), lr=0.001, momentum=0.5, weight_decay=0.001, nesterov=True)
     milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20]
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
 elif 'compactingbennet' == args.modeltype:
     net = CompactingBenNet(**model_args).cuda()
     #optimizer = torch.optim.AdamW(net.parameters(), lr=10e-5)
     #optimizer = torch.optim.Adam(net.parameters(), lr=10e-3)
-    optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.001, nesterov=True)
+    #optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.001, nesterov=True)
+    # Tuned with args.normalize_outputs
+    optimizer = torch.optim.SGD(net.parameters(), lr=10e-5, momentum=0.5, weight_decay=0.001, nesterov=True)
     milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20]
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
 elif 'dragonfly' == args.modeltype:
@@ -581,7 +594,7 @@ if not args.no_train:
 
 
 # Feature-space training
-if args.feature_perturbations:
+if args.feature_perturbations and 'target_xyz_position' in args.labels:
     # TODO Assuming that xyz position is the only DNN output
     if "target_xyz_position" in args.labels:
         dnn_output_to_xyz = lambda out: out[0].tolist()

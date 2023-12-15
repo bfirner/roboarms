@@ -23,7 +23,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import (Image, JointState)
 
 # Includes from this project
-from arm_utility import (ArmReplay)
+from arm_utility import (ArmReplay, computeGripperPosition, getDistance, interpretRTZPrediction, rSolver, RThetaZtoXYZ, XYZToRThetaZ)
 from data_utility import vidSamplingCommonCrop
 
 
@@ -78,6 +78,8 @@ class RosHandler(Node):
             qos_profile=1,
         )
 
+        # This should be the calibrated joint state message created by the ArmReplay class, not the
+        # default one found in the Interbotix nodes
         self.joint_subscription = self.create_subscription(
             msg_type=JointState,
             topic=arm_topic_string,
@@ -157,6 +159,7 @@ class RosHandler(Node):
             #self.position = [msg.position[self.joint_names.index(name)] for name in self.desired_joints]
             #self.velocity = [msg.velocity[self.joint_names.index(name)] for name in self.desired_joints]
             #self.effort = [msg.effort[self.joint_names.index(name)] for name in self.desired_joints]
+            # TODO FIXME Correct msg.position with the calibration from the robot arm
             self.position = msg.position
             self.velocity = msg.velocity
             self.effort = msg.effort
@@ -212,24 +215,27 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
     # Initialize the vector inputs tensor
     goal_idx = 0
     vector_input_locations = {}
-    out_idx = 0
+    vector_size = 0
     # History goal distance is initialized to 10cm
     prev_goal_distance = 0.1
     for input_name in vector_inputs:
         # Vector inputs are size 1 unless they are the current robot position
         if input_name == 'current_position':
             # This uses all joints. 'current_arm_position' has only the arm ones
-            vector_input_locations[input_name] = slice(out_idx, out_idx + len(robot_joint_names) + 3)
-            out_idx += len(robot_joint_names) + 3
+            vector_input_locations[input_name] = slice(vector_size, vector_size + len(robot_joint_names) + 3)
+            vector_size += len(robot_joint_names) + 3
         elif input_name == 'current_arm_position':
-            vector_input_locations[input_name] = slice(out_idx, out_idx + len(robot_joint_names))
-            out_idx += len(robot_joint_names)
+            vector_input_locations[input_name] = slice(vector_size, vector_size + len(robot_joint_names))
+            vector_size += len(robot_joint_names)
+        elif input_name == 'current_rtz_position':
+            vector_input_locations[input_name] = slice(vector_size, vector_size + 3)
+            vector_size += 3
         elif input_name == 'goal_mark':
-            vector_input_locations[input_name] = out_idx
-            out_idx += 1
+            vector_input_locations[input_name] = vector_size
+            vector_size += 1
         elif input_name[:len("goal_distance_prev_")] == "goal_distance_prev_":
-            vector_input_locations[input_name] = out_idx
-            out_idx += 1
+            vector_input_locations[input_name] = vector_size
+            vector_size += 1
             # TODO We will assume that the prediction_distance and the previous goal distance are
             # the same, so we only need to buffer a single previous goal distance prediction.
             goal_distance_history = int(input_name[len("goal_distance_prev_"):-2])
@@ -237,7 +243,7 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
             Exception("Unknown vector input: {}".format(input_name))
 
     # Create tensor inputs
-    vector_inputs = torch.zeros([1, out_idx]).float().cuda()
+    vector_input_buffer = torch.zeros([1, vector_size]).float().cuda()
 
     # Mark the locations of the model outputs
     output_locations = {}
@@ -249,6 +255,13 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
         elif output_name == 'target_arm_position':
             output_locations[output_name] = slice(out_idx, out_idx+len(robot_joint_names))
             out_idx += len(robot_joint_names)
+        elif output_name == 'target_rtz_position':
+            output_locations[output_name] = slice(out_idx, out_idx+3)
+            out_idx += len(robot_joint_names)
+        elif output_name == 'rtz_classifier':
+            rtz_classifier_size = 10
+            output_locations[output_name] = slice(out_idx, out_idx+rtz_classifier_size)
+            out_idx += rtz_classifier_size
         else:
             output_locations[output_name] = out_idx
             out_idx +=1
@@ -258,6 +271,8 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
     while not exit_event.is_set() and not ready:
         with data_read_lock:
             ready = image_processor.frame is not None and image_processor.position is not None
+
+    first_movement = True
 
     with torch.no_grad():
         # Wait for messages until an interrupt is received
@@ -277,28 +292,30 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
                 new_frame = (new_frame - m) / v
 
             # Set up vector inputs
-            out_idx = 0
             for input_name in vector_inputs:
                 # Vector inputs are size 1 unless they are the current robot position
-                vector_input_locations[input_name] = out_idx
+                outslice = vector_input_locations[input_name]
                 if input_name == 'current_position':
-                    vector_inputs[0, out_idx:out_idx+len(robot_joint_names)].copy_(torch.tensor(joint_positions))
-                    out_idx += len(robot_joint_names)
+                    vector_input_buffer[0, outslice].copy_(torch.tensor(joint_positions))
                 elif input_name == 'current_arm_position':
-                    vector_inputs[0, out_idx:out_idx+len(robot_joint_names)].copy_(torch.tensor(joint_positions))
-                    out_idx += len(robot_joint_names)
+                    vector_input_buffer[0, outslice].copy_(torch.tensor(joint_positions))
+                elif input_name == 'current_rtz_position':
+                    current_rtz_position = XYZToRThetaZ(*computeGripperPosition(joint_positions, segment_lengths=[0.104, 0.158, 0.147, 0.175]))
+                    print("Writing location {} into slice {}".format(current_rtz_position, outslice))
+                    vector_input_buffer[0, outslice].copy_(torch.tensor(current_rtz_position))
                 elif input_name == 'goal_mark':
-                    vector_inputs[0, out_idx] = goal_sequence[goal_idx]
-                    out_idx += 1
+                    vector_input_buffer[0, outslice.start] = goal_sequence[goal_idx]
                 elif input_name[:len("goal_distance_prev_")] == "goal_distance_prev_":
-                    vector_inputs[0, out_idx] = prev_goal_distance
-                    out_idx += 1
+                    vector_input_buffer[0, outslice.start] = prev_goal_distance
 
             # goal_mark determines the state to feed back to the network via the vector inputs
             # goal_distance is used to determine when to switch goals.
             # The target_position output contains the next set of joint positions.
 
-            net_out = net.forward(new_frame, vector_inputs)
+            if 0 == len(vector_inputs):
+                net_out = net(new_frame)
+            else:
+                net_out = net(new_frame, vector_input_buffer)
             if denormalizer is not None:
                 net_out = denormalizer(net_out)
             predicted_distance = 1.0
@@ -306,6 +323,29 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
                 net_out[0, output_locations['goal_distance']].item()
             if 'target_arm_position' in output_locations:
                 next_position = net_out[0, output_locations['target_arm_position']].tolist()
+            elif 'rtz_classifier' in output_locations:
+                # TODO This was a training parameter, it should be pulled from the dataset
+                # Setting the threshold to 1cm here
+                threshold = 0.01
+                current_xyz = computeGripperPosition(joint_positions)
+                predictions = net_out[0, output_locations['rtz_classifier']].tolist()
+                next_rtz_position = interpretRTZPrediction(*XYZToRThetaZ(*current_xyz), threshold, predictions)
+                next_xyz_position = RThetaZtoXYZ(*next_rtz_position)
+                # Solve for the joint positions
+                print("Trying to move from {} to {}".format(XYZToRThetaZ(*current_xyz), next_rtz_position))
+                middle_joints = rSolver(next_rtz_position[0], next_rtz_position[2], segment_lengths=[0.104, 0.158, 0.147, 0.175])
+                next_position = [
+                    # Waist
+                    next_rtz_position[1],
+                    # Shoulder
+                    middle_joints[0],
+                    # Elbow
+                    middle_joints[1],
+                    # Wrist angle
+                    middle_joints[2],
+                    # Wrist rotate
+                    0.0,
+                ]
             else:
                 raise RuntimeError("No target position for robot in DNN outputs!")
             print("Requesting position {}".format(next_position))
@@ -318,12 +358,16 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
             else:
                 # Save the current goal distance to be used as a status input.
                 prev_goal_distance = predicted_distance
+            delay = update_delay_s
+            # Make the first movement slow
+            if first_movement:
+                delay += 1
             # Extract the next position from the model outputs and send it to the robot.
-            position_queue.put((next_position, update_delay_s))
+            position_queue.put((next_position, delay))
             # TODO The sleep should be slightly less than the movement time to make movement appear
-            # smooth and should also consider things like inference time. Just multiplying by 0.95 here
-            # is a hack.
-            time.sleep(0.95*update_delay_s)
+            # smooth and should also consider things like inference time. Just subtracting 10 ms
+            # here is a hack
+            time.sleep(delay - 0.01)
 
     # Tell the arm that we are done with actuation.
     position_queue.put((None, None))
@@ -339,7 +383,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--puppet_model', default='px150')
     parser.add_argument('--puppet_name', default='arm2')
-    parser.add_argument('--puppet_calibration', default='configs/arm2_calibration.yaml',
+    parser.add_argument('--puppet_calibration', default='configs/arm2_calibration2.yaml',
         help="If control_calibration and puppet_calibration differ, correct during replay.")
     parser.add_argument(
         '--video_scale',
@@ -485,7 +529,8 @@ def main():
 
     # Arguments for RosHandler constructor
     video_args = {
-        'arm_topic_string': "/{}/joint_states".format(args.puppet_name),
+        # Subscribe to the calibrated joint positions so that processing is robot agnostic
+        'arm_topic_string': "/{}/calibrated_joint_states".format(args.puppet_name),
         'video_topic_string': args.image_topic,
         'scale': args.video_scale,
         'crop_width': args.width,
@@ -496,6 +541,7 @@ def main():
         'channels_per_frame': args.out_channels
     }
 
+    # TODO FIXME This needs the calibration so that it can correct the ROS joint position messages
     # Start the DNN inference thread before calling the blocking start_robot() call.
     inferencer = Thread(target=dnn_inference_thread, args=(bot.arm.group_info.joint_names,
         bot.position_commands, args.model_checkpoint, args.dnn_outputs,

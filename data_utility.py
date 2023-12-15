@@ -277,7 +277,7 @@ class ArmDataInterpolator:
         # }
 
         # First find the index before this event
-        # Go forwards if necessary to find the first index after the event
+        # Go forward if necessary to find the first index after the event
         while (self.last_idx < len(self.records) and
             self.records[self.last_idx]['timestamp'] < timestamp):
             self.last_idx += 1
