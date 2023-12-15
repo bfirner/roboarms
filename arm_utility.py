@@ -21,157 +21,13 @@ def getCalibratedJoints(arm_data, ordered_joint_names, calibration):
         positions.append(arm_data['position'][joint_index] - calibration[joint_name])
     return positions
 
-def converge(initial_joints, increment_vector, value_function, value_target, error_bound):
-    """Add the increment vector to the initial joints until value_function is within error_bound of value_target.
-
-    Arguments:
-        initial_joints ([theta1, theta2, theta3])
-        increment_vector ([inc1, inc2, inc3])
-        value_function (f([theta1, theta2, theta3]) -> float)
-        value_target (float)
-        error_bound (float)
-    Returns:
-        new_joints ([theta1, theta2, theta3])
-    """
-    new_joints = initial_joints
-    cur_joints = initial_joints
-    cur_value = value_function(*cur_joints)
-    cur_error = value_target - cur_value
-
-    # Solve
-    while abs(cur_error) > error_bound:
-        # Find the next position and error
-        new_joints = [cur_joints[i] + increment_vector[i] for i in range(len(cur_joints))]
-        new_value = value_function(*new_joints)
-        new_error = value_target - new_value
-
-        # Check if the increment should decrease, and check for wrong way errors
-        if math.copysign(1.0, cur_error) != math.copysign(1.0, new_error):
-            # Decrease the increment, we've gone past the target
-            increment_vector = [value / 10. for value in increment_vector]
-        elif abs(new_error) > abs(cur_error):
-            # TODO This should be handled by inverting the movement, but, depending upon the
-            # increment vector and the current pose, that may lead to infinite loops
-            # We are going in the wrong direction
-            assert not (new_error < 0 and cur_error < 0) and not (new_error > 0 and cur_error > 0)
-        else:
-            cur_joints = new_joints
-            cur_error = new_error
-
-    # Return the solution
-    return new_joints
-
-def oldrSolver(r_value, z_value, segment_lengths=[0.104, 0.158, 0.147, 0.175]):
-    """Solve to joint positions given a desired 'r' value in polar coordinates.
-
-    Will stay close to the given z_value (vertical offset) for the tip of the arm.
-
-    Works for the px150 robot arm.
-
-    Arguments:
-        r_value               (float): Desired radius extension
-        z_value               (float): Desired z offset
-        segment_lengths (List[float]): Lengths of the robot segments, in mm
-    Returns:
-        returns tuple of joint values
-    """
-    # Get within 1.0mm of the desired location (which is 0.001m)
-    error_bound = 0.001
-    # The lengths of segments (or effective segments) that are moved by the joints, in mm
-    segment_G = segment_lengths[0]    # Height of the pedestal upon which theta1 rotates
-    segment_C = segment_lengths[1]    # Effective length from theta1 to theta2
-    segment_D = segment_lengths[2]    # Length from theta2 to theta3
-    segment_H = segment_lengths[3]    # Length of the grasper from theta4
-
-    # Solvers for radius and z positions, in mm
-    def rOffset(theta1, theta2, theta3):
-        return math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H
-    def zOffset(theta1, theta2, theta3):
-        return segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D - math.sin(theta1 + theta2 + theta3)*segment_H
-
-    # The initial solver position, with the arm scrunched backwards and the wrist pointed straight.
-    # It is physically possible to get a small r value, but it should be attempted
-    current_joints = [-math.pi/2, math.pi/2, 0.]
-    current_r = rOffset(*current_joints)
-    current_z = zOffset(*current_joints)
-    r_error = r_value - current_r
-    z_error = z_value - current_z
-    # TODO Proper error handling
-    # Don't request a position behind the starting arm position
-    assert r_value <= current_r
-
-    # Iteratively solve because we're so lazy
-    # The steps will be:
-    # 1. Move the last joint to put z into the correct location
-    #    This assumes that the length of the last segment (segment_H) is sufficient.
-    # 2. Now adjust theta1 (the shoulder) and theta2 (the elbow) to increase r
-    #    We want to keep z exactly the same as z moves, so we will adjust theta3 as we go
-    #    Adjust theta3 (the wrist) to maintain z.
-    #    The ratio of theta1 to theta2 adjustments should be around 1:1 to keep the movement smooth
-    current_joints = converge(
-        initial_joints = current_joints,
-        # The last joint increases to reduce z when the other joints are 0.
-        increment_vector = [0., 0., math.copysign(0.1, -z_error)],
-        value_function = zOffset,
-        value_target = z_value,
-        error_bound = error_bound)
-    current_r = rOffset(*current_joints)
-    current_z = zOffset(*current_joints)
-    r_error = r_value - current_r
-    z_error = z_value - current_z
-
-    # Keep going until we arrive at an acceptible solution
-    # Move in half steps until we reach 10*error_bound
-    while abs(r_error) > error_bound or abs(z_error) > error_bound:
-        # Move towards the correct r value while changing z only by a small amount
-        if abs(r_error) > 10*error_bound:
-            next_r = (r_value + current_r) / 2.0
-        else:
-            next_r = r_value
-        sign = math.copysign(1.0, r_error)
-        current_joints = converge(
-            initial_joints = current_joints,
-            # The first joint increases to increase x as long as it is below math.pi/2
-            # This curls the arm forward
-            increment_vector = [0.1 * sign, -0.05 * sign, -(current_joints[2]/20.) * sign],
-            value_function = rOffset,
-            value_target = next_r,
-            error_bound = error_bound)
-
-        current_r = rOffset(*current_joints)
-        current_z = zOffset(*current_joints)
-        r_error = r_value - current_r
-        z_error = z_value - current_z
-
-        ## Move towards the correct z value while changing r only by a small amount
-        #if abs(z_error) > 10*error_bound:
-        #    next_z = (z_value + current_z) / 2.0
-        #else:
-        #    next_z = z_value
-        # Correct z
-        next_z = z_value
-        current_joints = converge(
-            initial_joints = current_joints,
-            # The last joint increases to reduce z when the other joints are 0.
-            # This lefts the wrist
-            increment_vector = [0.0, 0.0, math.copysign(0.1, -z_error)],
-            value_function = zOffset,
-            value_target = next_z,
-            error_bound = error_bound)
-
-        current_r = rOffset(*current_joints)
-        current_z = zOffset(*current_joints)
-        r_error = r_value - current_r
-        z_error = z_value - current_z
-
-    return current_joints
-
 def rSolver(r_value, z_value, segment_lengths=[0.104, 0.158, 0.147, 0.175]):
     """Solve to joint positions given a desired 'r' value in polar coordinates.
 
     Will stay close to the given z_value (vertical offset) for the tip of the arm.
 
     Works for the px150 robot arm.
+    Note: The px150 with a chopstick pointer has length 0.265 for the last joint
 
     Arguments:
         r_value               (float): Desired radius extension
@@ -628,7 +484,7 @@ class ArmReplay(InterbotixManipulatorXS):
                 calibrated_state = JointState()
                 calibrated_state.velocity = self.core.joint_states.velocity
                 calibrated_state.effort = self.core.joint_states.effort
-                calibrated_state.position = [self.core.joint_states.position[i] + self.corrections[i] for i in range(len(self.arm.group_info.joint_names))]
+                calibrated_state.position = [self.core.joint_states.position[i] - self.corrections[i] for i in range(len(self.arm.group_info.joint_names))]
                 self.calibrated_joint_publisher.publish(calibrated_state)
                 while not self.position_commands.empty():
                     position, delay = self.position_commands.get()
