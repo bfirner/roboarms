@@ -44,7 +44,7 @@ def rSolver(r_value, z_value, segment_lengths=[0.104, 0.158, 0.147, 0.175]):
     segment_G = segment_lengths[0]    # Height of the pedestal upon which theta1 rotates
     segment_C = segment_lengths[1]    # Effective length from theta1 to theta2
     segment_D = segment_lengths[2]    # Length from theta2 to theta3
-    segment_H = segment_lengths[3]    # Length of the grasper from theta4
+    segment_H = segment_lengths[3]    # Length of the grasper from theta3
 
     # Solvers for radius and z positions, in mm
     def rOffset(theta1, theta2, theta3):
@@ -65,22 +65,34 @@ def rSolver(r_value, z_value, segment_lengths=[0.104, 0.158, 0.147, 0.175]):
         theta1 = max_bend - 10e-5
     elif theta1 < -max_bend:
         theta1 = -max_bend + 10e-5
-    theta2 = 0
-    theta3 = 0
+    theta2 = 0.
+    theta3 = 0.
 
-    def shoulderDistance(theta1):
+    def shoulderCoord(theta1):
         shoulder_r = math.sin(theta1)*segment_C
         shoulder_z = segment_G + math.cos(theta1)*segment_C
+        return (shoulder_r, shoulder_z)
+
+    def elbowCoord(theta1, theta2):
+        elbow_r = math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D
+        elbow_z = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D
+        return (elbow_r, elbow_z)
+
+    def handCoord(theta1, theta2, theta3):
+        hand_r = math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta1 + theta2 + theta3)*segment_H
+        hand_z = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D - math.sin(theta1 + theta2 + theta3)*segment_H
+        return (hand_r, hand_z)
+
+    def shoulderDistance(theta1):
+        shoulder_r, shoulder_z = shoulderCoord(theta1)
         return math.sqrt((shoulder_r - r_value)**2 + (shoulder_z - z_value)**2)
 
     def elbowDistance(theta1, theta2):
-        elbow_r = math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D
-        elbow_z = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D
+        elbow_r, elbow_z = elbowCoord(theta1, theta2)
         return math.sqrt((elbow_r - r_value)**2 + (elbow_z - z_value)**2)
 
     def handDistance(theta1, theta2, theta3):
-        hand_r = math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta1 + theta2 + theta3)*segment_H
-        hand_z = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D - math.sin(theta1 + theta2 + theta3)*segment_H
+        hand_r, hand_z = handCoord(theta1, theta2, theta3)
         return math.sqrt((hand_r - r_value)**2 + (hand_z - z_value)**2)
 
     # Search for the correct position starting with this increment
@@ -98,98 +110,94 @@ def rSolver(r_value, z_value, segment_lengths=[0.104, 0.158, 0.147, 0.175]):
         # If increment will push theta1 over the maximum bend, set theta1 to the maximum bend
         # instead
         next_theta1 = theta1 + shoulder_sign*increment
-        if next_theta1 >= max_bend:
+        if next_theta1 > max_bend:
             next_theta1 = max_bend
-        elif next_theta1 <= -max_bend:
+        elif next_theta1 < -max_bend:
             next_theta1 = -max_bend
 
         new_distance = shoulderDistance(next_theta1) - (segment_D + segment_H)
 
         # See if we've gone too far. If not, keep the new value and continue
         new_sign = math.copysign(1.0, new_distance)
-        if new_sign != shoulder_sign or abs(next_theta1) >= max_bend:
+        if new_sign != shoulder_sign or abs(next_theta1) > max_bend:
             increment = increment / 10.0
         else:
             theta1 = next_theta1
             distance = new_distance
 
-    # Verify that we converged. If we didn't, then we'll need to make an adjustment by adjusting the
-    # elbow instead of the shoulder. This can happen if the target is very close and segment_D +
-    # segment_H > segment_C
-    if abs(distance) < error_bound:
+    # If the end of the arm is too close, bend theta3 in the opposite direction as theta1 to shorten
+    # the effective distance from the elbow joint to the end of the hand
+    if distance < -error_bound:
+        # From the law of cosines, the distance is:
+        # dist**2 = segment_D**2 + segment_H**2 - 2 * segment_D * segment_H * math.cos(math.pi - theta3)
+        # The distance is the desired distance, which is segment_D + segment_H - distance
+        abs_dist = shoulderDistance(theta1)
+        theta3 = math.pi - math.acos((segment_D**2 + segment_H**2 - abs_dist**2)/(2*segment_D*segment_H))
+        theta3 = -1 * math.copysign(theta3, theta1)
+
+        # We repeat the previous search, but now changing theta2 while theta1 remains fixed.
+        theta2 = max_bend - 10e-5
+        distance = handDistance(theta1, theta2, theta3)
+        hand_coords = handCoord(theta1, theta2, theta3)
+        target_angle = math.atan(z_value / r_value)
+        hand_angle = math.atan(hand_coords[1] / hand_coords[0])
+        angle_sign = math.copysign(1.0, hand_angle - target_angle)
+        # TODO It feels more elegant (but doesn't really matter) if we start at 0 and move in the
+        # correct sign direction rather than going to the max_bend and working backwards
+
+
+        # TODO FIXME If setting theta2 to the max bend still needs to go more positive to reach the
+        # target, then the target is unreachable without moving theta1 again.
+        if angle_sign == 1.0:
+            # TODO Raise an error
+            return [theta1, theta2, theta3]
+
+        increment = 0.1
+        while abs(distance) > error_bound and abs(theta2) < max_bend and abs(increment) > 10e-5:
+            # TODO If increment will push theta2 over the maximum bend, set theta2 to the maximum
+            # bend instead
+            next_theta2 = theta2 - increment
+            if next_theta2 >= max_bend:
+                next_theta2 = max_bend
+            elif next_theta2 <= -max_bend:
+                next_theta2 = -max_bend
+
+            new_distance = handDistance(theta1, next_theta2, theta3)
+            new_coords = handCoord(theta1, next_theta2, theta3)
+            new_hand_angle = math.atan(new_coords[1] / new_coords[0])
+            new_angle_sign = math.copysign(1.0, new_hand_angle - target_angle)
+
+            # See if we've gone too far. If not, keep the new value and continue
+            if new_distance > distance or abs(next_theta2) >= max_bend or new_angle_sign != angle_sign:
+                increment = increment / 10.0
+            else:
+                theta2 = next_theta2
+                distance = new_distance
+    # Bend the elbow (but keep the hand straight) to converge if the arm length is correct to touch
+    # the target.
+    elif abs(distance) < error_bound:
         # Now solve for theta2
         # The hypotenuse of the triangle is the distance. Grab the z distance as well, and plug that
         # ratio into the math.acos function to get the angle from the end of the shoulder. Then
         # remove the angles from theta1 to get the angle for theta2.
         # Subtract from math.pi/2 to be relative to the joint rather than the perpendicular line to
         # the ground from the joint.
-        shoulder_z_offset = segment_G + math.cos(theta1)*segment_C
-        z_distance = shoulder_z_offset - z_value
+        _, shoulder_z = shoulderCoord(theta1)
+        z_distance = shoulder_z - z_value
         angle_from_shoulder_end = math.acos(z_distance / shoulderDistance(theta1))
         theta2 = math.pi/2 - angle_from_shoulder_end - theta1
         theta3 = 0
         # QED
+    # Otherwise the arm is not long enough. There's nothing that we can do in this case
     else:
-        # We repeat the previous algorithm, but now changing theta2 while theta1 remains fixed.
-        distance = elbowDistance(theta1, theta2) - segment_H
-        elbow_sign = math.copysign(1.0, distance)
+        # TODO Raise an error
+        return [False, False, False]
 
-        increment = 0.1
-        while abs(distance) > error_bound and abs(theta2) < max_bend and abs(increment) > 10e-5:
-            # TODO If increment will push theta2 over the maximum bend, set theta2 to the maximum
-            # bend instead
-            next_theta2 = theta2 + elbow_sign*increment
-            if next_theta2 >= max_bend:
-                next_theta2 = max_bend
-            elif next_theta2 <= -max_bend:
-                next_theta2 = -max_bend
+    # The final distance from the target, after flexing theta3
+    distance = handDistance(theta1, theta2, theta3)
 
-            new_distance = elbowDistance(theta1, theta2 + elbow_sign*increment) - segment_H
-
-            # See if we've gone too far. If not, keep the new value and continue
-            new_sign = math.copysign(1.0, new_distance)
-            if new_sign != elbow_sign or abs(next_theta2) >= max_bend:
-                increment = increment / 10.0
-            else:
-                theta2 = next_theta2
-                distance = new_distance
-
-        # Now solve for theta3
-        # The hypotenuse of the triangle is the distance. Grab the z distance and plug that ratio
-        # into the math.acos function to get the angle from the end of the elbow. Then remove the
-        # angles from theta1 and theta2 to get the angle for theta3.
-        elbow_z_offset = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D
-        z_distance = elbow_z_offset - z_value
-        angle_from_elbow_end = math.acos(z_distance / elbowDistance(theta1, theta2))
-        elbow_r = math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D
-        theta3 = (math.pi/2 - angle_from_elbow_end) - theta1 - theta2
-        # QED
-
-        # if abs(theta3) >= max_bend:
-        #   # Flip the elbow to the other side of the target -- there should be 2 solutions that put
-        #   # the end of the elbow at the same distance from the target, and the other one could have
-        #   # a lower angle for theta3
-        # if distance > error_bound:
-        #   # The algorithm already bend theta1 and theta2 to minimize the bend of theta3
-        #   # However, theta1 was set assuming that theta3 would be 0, which may have pushed theta1
-        #   # into a high bend position and then trapped the joints at their maximum bends
-        #   if abs(theta1) < max_bend and abs(theta2) < max_bend:
-        #     # Bend both theta1 and theta2 to maintain the same elbowDistance but change the angle
-        #     of theta3
-        # TODO FIXME These notes have moved around, and need to be revised
-        # If the maximum bend on theta1 or theta2 and the distance > error_bound
-        # # 1) And the maximum bend of theta1 has not been reached, then theta1 should be changed
-        # to move the arm closer to the target (rotated by the amount we would have rotated
-        # theta2) and theta3 will become bent to change the total
-        # distance from the beginning of the elbow to the tip of the manipulator
-        # # 2) And the maximum bend of theta1 has also been reached, then bend theta2 back in
-        # the other direction and bend theta3 to compensate
-
-        # The final distance from the target, after flexing theta3
-        distance = handDistance(theta1, theta2, theta3)
-
-        # If this failed then we are out of luck
-        assert distance <= error_bound
+    # If this failed then we are out of luck
+    assert distance <= error_bound
 
     # Return the result
     return [theta1, theta2, theta3]
