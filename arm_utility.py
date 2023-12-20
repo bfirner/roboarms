@@ -271,6 +271,52 @@ def interpretRTZPrediction(r, theta, z, threshold, prediction):
 
     return [out_r, out_theta, out_z]
 
+def getWaistCoords(theta0, segment_G):
+    waist_x = 0.
+    waist_y = 0.
+    waist_z = segment_G
+    return (waist_x, waist_y, waist_z)
+
+def getShoulderCoords(theta0, theta1, segment_G, segment_C):
+    shoulder_x = (math.sin(theta1)*segment_C*math.cos(theta0))
+    shoulder_y = (math.sin(theta1)*segment_C*math.sin(theta0))
+    shoulder_z = segment_G + math.cos(theta1)*segment_C
+    return (shoulder_x, shoulder_y, shoulder_z)
+
+def getElbowCoords(theta0, theta1, theta2, segment_G, segment_C, segment_D):
+    elbow_x = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D)*math.cos(theta0)
+    elbow_y = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D)*math.sin(theta0)
+    elbow_z = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D
+    return (elbow_x, elbow_y, elbow_z)
+
+def computeAllJointPositions(joint_states, segment_lengths=[0.104, 0.158, 0.147, 0.175]):
+    """Return the x,y,z positions of the robot waist, shoulder, elbow, and the end of the gripper
+
+    Arguments:
+        positions       (list[float]): Positions of the joints
+        segment_lengths (list[float]): Lengths of each arm segment
+    Returns:
+        [(x,y,z)]: list of tuples of the gripper location, in meters
+    """
+    # Assign names to everything so that the equations make sense
+    theta0 = positions[0]
+    theta1 = positions[1]
+    theta2 = positions[2]
+    theta3 = positions[3]
+    # The lengths of segments (or effective segments) that are moved by the previous joints,
+    # in mm
+    segment_G = segment_lengths[0]    # Height of the pedestal upon which theta1 rotates
+    segment_C = segment_lengths[1]    # Effective length from theta1 to theta2
+    segment_D = segment_lengths[2]    # Length from theta2 to theta3
+    segment_H = segment_lengths[3]    # Length of the grasper from theta3
+    return [
+        getWaistCoords(theta0, segment_G),
+        getShoulderCoords(*joint_states[0:2], *segment_lengths[0:2]),
+        getElbowCoords(*joint_states[0:3], *segment_lengths[0:3]),
+        getGripperPosition(*joint_states, *segment_lengths)
+    ]
+
+
 # TODO These names are confusing (computeGripperPosition and getGripperPosition)
 def computeGripperPosition(positions, segment_lengths=[0.104, 0.158, 0.147, 0.175]):
     """Get the x,y,z position of the gripper relative to the point under the waist in meters.
@@ -278,7 +324,7 @@ def computeGripperPosition(positions, segment_lengths=[0.104, 0.158, 0.147, 0.17
     Works for the px150 robot arm.
 
     Arguments:
-        positions      (List[float]): Positions of the joints
+        positions      (list[float]): Positions of the joints
     Returns:
         x,y,z tuple of the gripper location, in meters
     """
@@ -296,7 +342,7 @@ def computeGripperPosition(positions, segment_lengths=[0.104, 0.158, 0.147, 0.17
     segment_G = segment_lengths[0]    # Height of the pedestal upon which theta1 rotates
     segment_C = segment_lengths[1]    # Effective length from theta1 to theta2
     segment_D = segment_lengths[2]    # Length from theta2 to theta3
-    segment_H = segment_lengths[3]    # Length of the grasper from theta4
+    segment_H = segment_lengths[3]    # Length of the grasper from theta3
     arm_x = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.cos(theta0)
     arm_y = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.sin(theta0)
     arm_z = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D - math.sin(theta1 + theta2 + theta3)*segment_H
