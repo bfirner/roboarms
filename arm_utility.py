@@ -299,10 +299,10 @@ def computeAllJointPositions(joint_states, segment_lengths=[0.104, 0.158, 0.147,
         [(x,y,z)]: list of tuples of the gripper location, in meters
     """
     # Assign names to everything so that the equations make sense
-    theta0 = positions[0]
-    theta1 = positions[1]
-    theta2 = positions[2]
-    theta3 = positions[3]
+    theta0 = joint_states[0]
+    theta1 = joint_states[1]
+    theta2 = joint_states[2]
+    theta3 = joint_states[3]
     # The lengths of segments (or effective segments) that are moved by the previous joints,
     # in mm
     segment_G = segment_lengths[0]    # Height of the pedestal upon which theta1 rotates
@@ -313,7 +313,7 @@ def computeAllJointPositions(joint_states, segment_lengths=[0.104, 0.158, 0.147,
         getWaistCoords(theta0, segment_G),
         getShoulderCoords(*joint_states[0:2], *segment_lengths[0:2]),
         getElbowCoords(*joint_states[0:3], *segment_lengths[0:3]),
-        getGripperPosition(*joint_states, *segment_lengths)
+        computeGripperPosition(joint_states, segment_lengths)
     ]
 
 

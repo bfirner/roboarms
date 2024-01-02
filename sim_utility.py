@@ -59,7 +59,6 @@ class JointStatesToImage(object):
 
 
         Arguments:
-            joint_states       list([float]): List of the five joint positions (waist, shoulder, elbow, wrist angle, wrist rotate)
             segment_lengths    list([float]): Lengths of each arm segment
             arm_origin         list([float]): World coordinates of the arm (x, y, z)
             arm_bases          list(list[float]): Basis vectors that defines the arm coordinate system
@@ -70,6 +69,7 @@ class JointStatesToImage(object):
         Returns:
             cv::image object
         """
+        self.segment_lengths = segment_lengths
         self.camera_fovs = camera_fovs
         self.resolution = resolution
         self.video_stream = None
@@ -123,7 +123,7 @@ class JointStatesToImage(object):
         """
 
         # Find the joints locations in arm space
-        coordinates = computeAllJointPositions(joint_states, segment_lengths)
+        coordinates = computeAllJointPositions(joint_states, self.segment_lengths)
 
         # Find the camera coordinates for the joints
         # Add the magic number (1.0) onto each one for the coordinate transform and remove them from the end coordinates.
