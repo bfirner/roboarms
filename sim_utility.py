@@ -3,6 +3,7 @@
 
 import cv2
 import math
+import numpy
 import torch
 import yaml
 
@@ -74,7 +75,7 @@ class JointStatesToImage(object):
         self.resolution = resolution
         self.video_stream = None
         # Make a drawing buffer (height, width, channels)
-        self.draw_buffer = torch.zeros([resolution[0], resolution[1], 3], dtype=torch.uint8)
+        self.draw_buffer = numpy.zeros([resolution[0], resolution[1], 3], dtype=numpy.uint8)
 
         # Get the transformation matrix
         self.arm_to_camera = makeTransformationMatrix(camera_origin, camera_bases, arm_origin, arm_bases)
@@ -86,10 +87,10 @@ class JointStatesToImage(object):
             raise RuntimeError(
                 "Basis vectors provided to JointStatesToImage that are not orthogonal.  Transformation matrix is {}".format(self.arm_to_camera))
 
-    def cameraCoordinateToImage(self, camera_coordinate):
-        """Convert a camera coordinate tuple into image coordinate space.
+    def cameraCoordinateToImage(self, camera_coordinates):
+        """Convert a camera coordinates tuple into image coordinate space.
 
-        The range for the image will treated as the range 0 to 1, but coordinates can be returned that lie outside of the image.
+        The range for the image will treated as the range 0 to height or width, but coordinates can be returned that lie outside of the image.
         """
         # Everything is in a right hand rule system, where x is the distance, y is a lateral offset (left/counter clockwise is positive), and z is the
         # vertical offset (up is positive).
@@ -103,7 +104,7 @@ class JointStatesToImage(object):
         x_angle = math.atan(camera_coordinates[1] / camera_coordinates[0])
 
         # Fraction of a half image offset based upon the angle and the FOV
-        y_center_offset = y_angle / self.camara_fovs[0]
+        y_center_offset = y_angle / self.camera_fovs[0]
         x_center_offset = x_angle / self.camera_fovs[1]
 
         # Positive is up, so subtract the offset from the image center
@@ -111,7 +112,10 @@ class JointStatesToImage(object):
         # Positive is left, so subtract the offset from the image center
         x_origin_offset = 0.5 - x_center_offset
 
-        return (y_origin_offset, x_origin_offset)
+        image_y = round(y_origin_offset * self.resolution[0])
+        image_x = round(x_origin_offset * self.resolution[1])
+
+        return (image_y, image_x)
 
     def render(self, joint_states):
         """Render a simple grayscale image of an arm on a white background with a pinhole view.
@@ -139,7 +143,7 @@ class JointStatesToImage(object):
         # TODO Different color for each joint
         color = (0.1, 0.1, 0.1)
         # Fill the buffer with white
-        self.draw_buffer.fill_(255.0)
+        self.draw_buffer.fill(255.0)
         for coord_a, coord_b in zip(image_coordinates[:-1], image_coordinates[1:]):
             # Draw onto the draw buffer
             cv2.line(self.draw_buffer, coord_a, coord_b, color, thickness)
@@ -158,7 +162,7 @@ class JointStatesToImage(object):
     def writeFrame(self, joint_states):
         if self.video_stream is not None:
             image = self.render(joint_states)
-            self.video_stream.write(frame)
+            self.video_stream.write(image)
 
     def endVideo(self):
         self.video_stream.release()

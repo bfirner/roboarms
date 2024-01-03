@@ -275,19 +275,19 @@ def getWaistCoords(theta0, segment_G):
     waist_x = 0.
     waist_y = 0.
     waist_z = segment_G
-    return (waist_x, waist_y, waist_z)
+    return [waist_x, waist_y, waist_z]
 
 def getShoulderCoords(theta0, theta1, segment_G, segment_C):
     shoulder_x = (math.sin(theta1)*segment_C*math.cos(theta0))
     shoulder_y = (math.sin(theta1)*segment_C*math.sin(theta0))
     shoulder_z = segment_G + math.cos(theta1)*segment_C
-    return (shoulder_x, shoulder_y, shoulder_z)
+    return [shoulder_x, shoulder_y, shoulder_z]
 
 def getElbowCoords(theta0, theta1, theta2, segment_G, segment_C, segment_D):
     elbow_x = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D)*math.cos(theta0)
     elbow_y = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D)*math.sin(theta0)
     elbow_z = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D
-    return (elbow_x, elbow_y, elbow_z)
+    return [elbow_x, elbow_y, elbow_z]
 
 def computeAllJointPositions(joint_states, segment_lengths=[0.104, 0.158, 0.147, 0.175]):
     """Return the x,y,z positions of the robot waist, shoulder, elbow, and the end of the gripper
@@ -347,7 +347,7 @@ def computeGripperPosition(positions, segment_lengths=[0.104, 0.158, 0.147, 0.17
     arm_y = (math.sin(theta1)*segment_C + math.cos(theta2 + theta1)*segment_D + math.cos(theta3 + theta2 + theta1)*segment_H)*math.sin(theta0)
     arm_z = segment_G + math.cos(theta1)*segment_C - math.sin(theta1 + theta2)*segment_D - math.sin(theta1 + theta2 + theta3)*segment_H
     # Return the x,y,z end effector coordinates in meters
-    return (arm_x, arm_y, arm_z)
+    return [arm_x, arm_y, arm_z]
 
     #model_generator = getattr(mrd, 'px150')
     #robot_model = model_generator()
