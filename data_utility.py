@@ -256,6 +256,29 @@ class ArmDataInterpolator:
             # If no such record was found then return None.
             return None
 
+    def findLastStateBefore(self, timestamp):
+        """Find the last state before the given timestamp.
+
+        Arguments:
+            timestamp           (int): The ros timestamp (in ns)
+        Returns:
+            int: The index of the last record before the given timestamp.
+        """
+        # First find the index before this event
+        # Go forward if necessary to find the first index after the event
+        last_before = self.last_idx
+        while (last_before < len(self.records) and
+            self.records[last_before]['timestamp'] < timestamp):
+            last_before += 1
+        if last_before >= len(self.records):
+            raise IndexError("Requested timestamp {} is beyond the data range.".format(timestamp))
+        # Go backwards if necessary to find the first index before this event
+        while 0 < last_before and self.records[last_before]['timestamp'] > timestamp:
+            last_before -= 1
+        if last_before < 0:
+            raise IndexError("Requested timestamp {} comes before the data range.".format(timestamp))
+        return last_before
+
     def interpolate(self, timestamp):
         """Interpolate arm data to match the given video timestamp.
 
@@ -276,18 +299,7 @@ class ArmDataInterpolator:
         #     'effort': record['effort'],
         # }
 
-        # First find the index before this event
-        # Go forward if necessary to find the first index after the event
-        while (self.last_idx < len(self.records) and
-            self.records[self.last_idx]['timestamp'] < timestamp):
-            self.last_idx += 1
-        if self.last_idx >= len(self.records):
-            raise IndexError("Requested timestamp {} is beyond the data range.".format(timestamp))
-        # Go backwards if necessary to find the first index before this event
-        while 0 < self.last_idx and self.records[self.last_idx]['timestamp'] > timestamp:
-            self.last_idx -= 1
-        if self.last_idx < 0:
-            raise IndexError("Requested timestamp {} comes before the data range.".format(timestamp))
+        self.last_idx = self.findLastStateBefore(timestamp)
 
         # This index is the state before the given timestamp
         before_state = self.records[self.last_idx]
@@ -317,6 +329,59 @@ class ArmDataInterpolator:
         for dataname in ['position', 'velocity', 'effort']:
             new_record[dataname] = [data[0] + (data[1]-data[0])*delta for data in
                 zip(before_state[dataname], after_state[dataname])]
+
+        # Return the assembled record
+        return new_record
+
+    def localAverage(self, timestamp, smooth_range = 10):
+        """Locally average arm data around the given video timestamp
+
+        This function will adjust the last_idx variable.
+
+        Arguments:
+            timestamp    (int): The ros timestamp (in ns)
+            smooth_range (int): The number of entries behind and ahead of this one to use for local averaging
+        Returns:
+            {str: float}: A table of the smoothed data at this timestamp.
+        """
+        # Extract the position, velocity, and effort values for each of the joints.
+        # The data looks like this:
+        # data = {
+        #     'timestamp': time_sec * 10**9 + time_ns,
+        #     'name': record['name'],
+        #     'position': record['position'],
+        #     'velocity': record['velocity'],
+        #     'effort': record['effort'],
+        # }
+
+        # This index is the state before the given timestamp
+        self.last_idx = self.findLastStateBefore(timestamp)
+
+        # Shrink the smoothing range to what is available
+        if self.last_idx + smooth_range >= len(self.records):
+            smooth_range = len(self.records) - self.last_idx - 1
+        if self.last_idx - smooth_range < 0:
+            smooth_range = self.last_idx
+
+        # Assemble a new record
+        new_record = {
+            'timestamp': timestamp,
+            'name': self.records[self.last_idx]['name'],
+        }
+
+        first_idx = self.last_idx - smooth_range
+        last_idx = self.last_idx + smooth_range
+        total_elements = 2 * smooth_range + 1
+
+        new_record['total_distance'] = sum([self.records[idx]['total_distance'] for idx in range(first_idx, last_idx+1)]) / total_elements
+
+        # Interpolate data from each of the robot records
+        for dataname in ['position', 'velocity', 'effort']:
+            entries = len(self.records[first_idx][dataname])
+            new_data = []
+            for entry in range(entries):
+                new_data.append(sum([self.records[idx][dataname][entry] for idx in range(first_idx, last_idx+1)]) / total_elements)
+            new_record[dataname] = new_data
 
         # Return the assembled record
         return new_record

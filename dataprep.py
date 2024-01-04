@@ -183,10 +183,9 @@ def main():
         default=False,
         action='store_true',
         help='Images are normalized by default, but this can be disabled.')
+    # TODO Add a video prefix to allow matching to sim videos
 
     args = parser.parse_args()
-
-    # TODO Everything
 
     # Create a writer for the WebDataset
     datawriter = wds.TarWriter(args.outpath, encoder=False)
