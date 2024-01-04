@@ -55,7 +55,7 @@ def makeTransformationMatrix(destination_origin, destination_bases, source_origi
 
 class JointStatesToImage(object):
 
-    def __init__(self, segment_lengths, arm_origin, arm_bases, camera_fovs, camera_origin, camera_bases, resolution):
+    def __init__(self, segment_lengths, arm_origin, arm_bases, camera_fovs_deg, camera_origin, camera_bases, resolution):
         """Create a renderer for simple grayscale images of an arm on a white background with a pinhole view.
 
 
@@ -63,7 +63,7 @@ class JointStatesToImage(object):
             segment_lengths    list([float]): Lengths of each arm segment
             arm_origin         list([float]): World coordinates of the arm (x, y, z)
             arm_bases          list(list[float]): Basis vectors that defines the arm coordinate system
-            camera_fovs        list([float]): Vertical and horizontal fields of view (for a pinhole camera, in radians)
+            camera_fovs_deg    list([float]): Vertical and horizontal fields of view (for a pinhole camera, in degrees)
             camera_origin      list([float]): World coordinates of the camera
             camera_bases       list(list[float]): Basis vectors that defines the camera coordinate system
             resolution               list([int]): The height and width of the image
@@ -71,7 +71,8 @@ class JointStatesToImage(object):
             cv::image object
         """
         self.segment_lengths = segment_lengths
-        self.camera_fovs = camera_fovs
+        self.camera_fovs_degs = camera_fovs_deg
+        self.camera_fovs_rads = [fov * math.pi / 180.0 for fov in camera_fovs_deg]
         self.resolution = resolution
         self.video_stream = None
         # Make a drawing buffer (height, width, channels)
@@ -91,6 +92,7 @@ class JointStatesToImage(object):
         """Convert a camera coordinates tuple into image coordinate space.
 
         The range for the image will treated as the range 0 to height or width, but coordinates can be returned that lie outside of the image.
+        The returned coordinates (x offset from left side, y offset from top)
         """
         # Everything is in a right hand rule system, where x is the distance, y is a lateral offset (left/counter clockwise is positive), and z is the
         # vertical offset (up is positive).
@@ -99,13 +101,13 @@ class JointStatesToImage(object):
 
         # First, convert the coordinates to angles, and from that convert them to fov offsets, and from there convert them into pixels.
         # This is the atan of z/x. Positive is up.
-        y_angle = math.atan(camera_coordinates[2] / camera_coordinates[2])
+        y_angle = math.atan(camera_coordinates[2] / camera_coordinates[0])
         # This is the atan of y/x. Positive is left.
         x_angle = math.atan(camera_coordinates[1] / camera_coordinates[0])
 
         # Fraction of a half image offset based upon the angle and the FOV
-        y_center_offset = y_angle / self.camera_fovs[0]
-        x_center_offset = x_angle / self.camera_fovs[1]
+        y_center_offset = y_angle / self.camera_fovs_rads[0]
+        x_center_offset = x_angle / self.camera_fovs_rads[1]
 
         # Positive is up, so subtract the offset from the image center
         y_origin_offset = 0.5 - y_center_offset
@@ -115,7 +117,7 @@ class JointStatesToImage(object):
         image_y = round(y_origin_offset * self.resolution[0])
         image_x = round(x_origin_offset * self.resolution[1])
 
-        return (image_y, image_x)
+        return (image_x, image_y)
 
     def render(self, joint_states):
         """Render a simple grayscale image of an arm on a white background with a pinhole view.
@@ -127,26 +129,25 @@ class JointStatesToImage(object):
         """
 
         # Find the joints locations in arm space
-        coordinates = computeAllJointPositions(joint_states, self.segment_lengths)
+        arm_coordinates = computeAllJointPositions(joint_states, self.segment_lengths)
 
         # Find the camera coordinates for the joints
         # Add the magic number (1.0) onto each one for the coordinate transform and remove them from the end coordinates.
-        joint_coordinates = [self.arm_to_camera.matmul(torch.tensor(coords + [1.0]))[:-1] for coords in coordinates]
+        joint_coordinates = [self.arm_to_camera.matmul(torch.tensor(coords + [1.0]))[:-1] for coords in arm_coordinates]
 
         # Convert world coordinates to camera image coordinates
         image_coordinates = [self.cameraCoordinateToImage(coord) for coord in joint_coordinates]
 
-        # TODO Clear the draw buffer
         # Now render the joints.
-        # TODO Just drawing with lines, should rending tubes or something
+        # TODO Just drawing with lines, should render with rectangles or something
         thickness = 5
         # TODO Different color for each joint
         color = (0.1, 0.1, 0.1)
         # Fill the buffer with white
         self.draw_buffer.fill(255.0)
         for coord_a, coord_b in zip(image_coordinates[:-1], image_coordinates[1:]):
-            # Draw onto the draw buffer
-            cv2.line(self.draw_buffer, coord_a, coord_b, color, thickness)
+            # Draw onto the draw buffer with an anti-aliased line
+            cv2.line(img=self.draw_buffer, pt1=coord_a, pt2=coord_b, color=color, thickness=thickness, lineType=cv2.LINE_AA)
             # TODO probably use a cv2.fillPoly or cv2.polylines to draw the robot limbs with size
 
         return self.draw_buffer
@@ -156,8 +157,10 @@ class JointStatesToImage(object):
         cv2.imwrite(path, self.render(joint_states))
 
     def beginVideo(self, path):
-        fourcc = cv2.VideoWriter_fourcc(*'h264')
-        self.video_stream = cv2.VideoWriter(filename=path, fourcc=fourcc, fps=30.0, frameSize=self.resolution, isColor=True)
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')
+        # The order of height and width is not the same as expected of the buffer itself.
+        height_width = (self.resolution[1], self.resolution[0])
+        self.video_stream = cv2.VideoWriter(filename=path, fourcc=fourcc, fps=30.0, frameSize=height_width, isColor=True)
 
     def writeFrame(self, joint_states):
         if self.video_stream is not None:
