@@ -169,7 +169,7 @@ def main():
         else:
             tensor_data = decodeUTF8Strings(data[1:])
             if 0 < len(vector_names):
-                vector_inputs = torch.cat(tensor_data[1:1+len(vector_names)], 1)
+                vector_inputs = torch.cat(tensor_data[0:len(vector_names)], 1)
             else:
                 vector_inputs = []
 
