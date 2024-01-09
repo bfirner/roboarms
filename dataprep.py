@@ -183,6 +183,12 @@ def main():
         default=False,
         action='store_true',
         help='Images are normalized by default, but this can be disabled.')
+    parser.add_argument(
+        '--video_prefix',
+        required=False,
+        default='robot_video_',
+        type=str,
+        help='The prefix of the video to use for dataset creation.')
     # TODO Add a video prefix to allow matching to sim videos
 
     args = parser.parse_args()
@@ -207,7 +213,7 @@ def main():
         # There should be a single file match for each of these paths.
         db_paths = list(path.glob("rosbag2*.db3"))
         ts_paths = list(path.glob("robo_video_*.csv"))
-        vid_paths = list(path.glob("robo_video_*.mp4"))
+        vid_paths = list(path.glob("{}*.mp4".format(args.video_prefix)))
 
         # Perform some sanity checks
         if 0 == len(db_paths):
