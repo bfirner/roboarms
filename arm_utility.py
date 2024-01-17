@@ -214,6 +214,15 @@ def RThetaZtoXYZ(r, theta, z):
     y = math.sin(theta) * r
     return [x, y, z]
 
+def RTZClassifierNames():
+    """Return the names of the rtz classifier outputs.
+
+    At some point, if this becomes too complicated it may make sense to encapsulate all classifier
+    outputs into a class with @staticmethod members
+    """
+    return ["r+0.25", "r-0.25", "z+0.25", "z-0.25", "theta+pi/30", "theta+pi/100", "theta+pi/300",
+            "theta-pi/30", "theta-pi/100", "theta-pi/300"]
+
 def interpretRTZPrediction(r, theta, z, threshold, prediction):
     """Interpret a 10 value prediction from a DNN.
 

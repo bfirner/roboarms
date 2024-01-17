@@ -29,7 +29,7 @@ from collections import namedtuple
 # Helper function to convert to images
 from torchvision import transforms
 
-from arm_utility import (grepGripperLocationFromTensors)
+from arm_utility import (grepGripperLocationFromTensors, RTZClassifierNames)
 
 from embedded_perturbation import (
         drawNewFeatures, findMultivariateParameters,
@@ -292,8 +292,13 @@ for label_idx, out_elem in enumerate(range(label_range.start, label_range.stop))
     if 1 == label_elements:
         label_names.append(args.labels[label_idx])
     else:
-        for i in range(label_elements):
-            label_names.append("{}-{}".format(args.labels[label_idx], i))
+        if args.labels[label_idx] == 'rtz_classifier':
+            classifier_names = RTZClassifierNames()
+            for i in range(label_elements):
+                label_names.append("{}".format(classifier_names[i]))
+        else:
+            for i in range(label_elements):
+                label_names.append("{}-{}".format(args.labels[label_idx], i))
 
 # Find the values required to normalize network outputs
 if not args.normalize_outputs:
