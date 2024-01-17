@@ -1,0 +1,10 @@
+# Letter locations in the world frame
+# Letters are 5cm tall.
+# Each letter's four corners (clockwise from the upper left corner) are stored in x,y,z world coordinates.
+# Values are in meters
+# The bottom row of letters is 15cm forward, the top is 30cm forward
+# The center of the left column is 7cm shifted, the right is -7cm
+A: [[0.35, 0.115, 0.02], [0.35, 0.07, 0.02], [0.30, 0.07, 0.02], [0.30, 0.115, 0.02]]
+H: [[0.35, -0.07, 0.02], [0.35, -0.105, 0.02], [0.30, -0.105, 0.02], [0.30, -0.07, 0.02]]
+I: [[0.2, 0.09, 0.02], [0.2, 0.08, 0.02], [0.15, 0.08, 0.02], [0.15, 0.09, 0.02]]
+B: [[0.2, -0.07, 0.02], [0.2, -0.1, 0.02], [0.15, -0.1, 0.02], [0.15, -0.07, 0.02]]

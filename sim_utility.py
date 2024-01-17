@@ -77,8 +77,10 @@ class JointStatesToImage(object):
         self.video_stream = None
         # Make a drawing buffer (height, width, channels)
         self.draw_buffer = numpy.zeros([resolution[0], resolution[1], 3], dtype=numpy.uint8)
+        # We may be asked to keep a consistent background image during the simulation
+        self.background = None
 
-        # Get the transformation matrix
+        # Get the transformation matrix for arm to camera
         self.arm_to_camera = makeTransformationMatrix(camera_origin, camera_bases, arm_origin, arm_bases)
 
         # Verify that the transformation matrix has rows that are orthogonal. This should be true; each coordinate plane should be orthogonal to the
@@ -87,6 +89,10 @@ class JointStatesToImage(object):
         if not (torch.abs(self.arm_to_camera[:3,:3].matmul(self.arm_to_camera[:3,:3].T) - torch.eye(3)) < 0.0001).all().item():
             raise RuntimeError(
                 "Basis vectors provided to JointStatesToImage that are not orthogonal.  Transformation matrix is {}".format(self.arm_to_camera))
+
+        # Get the transformation matrix for world to camera. This is used if items will be drawn in
+        # the background.
+        self.bg_to_camera = makeTransformationMatrix(camera_origin, camera_bases, [0., 0., 0.], [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]])
 
     def cameraCoordinateToImage(self, camera_coordinates):
         """Convert a camera coordinates tuple into image coordinate space.
@@ -143,14 +149,57 @@ class JointStatesToImage(object):
         thickness = 5
         # TODO Different color for each joint
         color = (0.1, 0.1, 0.1)
-        # Fill the buffer with white
-        self.draw_buffer.fill(255.0)
+        # Fill the buffer with white unless a background already exists.
+        if self.background is None:
+            self.draw_buffer.fill(255.0)
+        else:
+            numpy.copyto(self.draw_buffer, self.background)
         for coord_a, coord_b in zip(image_coordinates[:-1], image_coordinates[1:]):
             # Draw onto the draw buffer with an anti-aliased line
             cv2.line(img=self.draw_buffer, pt1=coord_a, pt2=coord_b, color=color, thickness=thickness, lineType=cv2.LINE_AA)
             # TODO probably use a cv2.fillPoly or cv2.polylines to draw the robot limbs with size
 
         return self.draw_buffer
+
+    def addLetter(self, character, char_coordinates):
+        """Adds the given character to the image at the given world space coordinates."""
+        # Create a background if one does not already exist
+        # It is the same size as the drawing buffer and starts as a white color (255, 255, 255)
+        if self.background is None:
+            self.background = 255 * numpy.ones([self.resolution[0], self.resolution[1], 3], dtype=numpy.uint8)
+        # Add the letter to the background
+
+        # # Find the size and then make a buffer with the letter
+        char_size, baseline = cv2.getTextSize(character, fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1,
+            thickness=4)
+        char_width, char_height = char_size
+        char_img_height = char_height + baseline
+        # Correct value for RGB: 72, 60, 50. Open CV uses BGR.
+        #transparent_taupe = (72, 60, 50, 255)
+        transparent_taupe = (50, 60, 72, 255)
+        text_buffer = numpy.zeros((char_img_height, char_width, 4), dtype=numpy.uint8)
+        cv2.putText(img=text_buffer, text=character, org=(0, char_height),
+            fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=transparent_taupe, thickness=4,
+            lineType=cv2.LINE_AA)
+        src_points = numpy.float32([[0, 0], [char_width, 0], [char_width, char_img_height], [0, char_img_height]])
+
+        # # Find the target points on the image by mapping from the provided points in world coordinates into the camera perspective.
+        target_coordinates = [self.cameraCoordinateToImage(self.bg_to_camera.matmul(torch.tensor(coord + [1.0]))) for coord in char_coordinates]
+        target_points = numpy.float32(target_coordinates)
+        tx_matrix = cv2.getPerspectiveTransform(src_points, target_points)
+
+        # # cv2.warpPerspective onto a buffer the same size as the background
+        # # We could have rendered this onto a smaller image and then drawn into the proper
+        # # position, but since this is a one-time operation we will consider this "okay" for now.
+        warped_text_buffer = cv2.warpPerspective(text_buffer, tx_matrix, (self.background.shape[1], self.background.shape[0]))
+
+        # Render onto background with the worst version of alpha support ever (meaning manual)
+        text_mask = warped_text_buffer[:, :, 3]/255
+        text_mask = numpy.repeat(text_mask[:, :, numpy.newaxis], 3, axis=2)
+        masked_letter = text_mask * warped_text_buffer[:,:,:-1]
+        masked_bg = (1.0 - text_mask) * self.background
+        self.background = cv2.add(masked_letter.astype(numpy.uint8), masked_bg.astype(numpy.uint8))
+
 
     def save(self, joint_states, path):
         """Render and save the robot state into path."""
