@@ -6,6 +6,7 @@
 
 import argparse
 import pathlib
+import random
 import sys
 import time
 import yaml
@@ -91,9 +92,6 @@ def main():
         required=False,
         type=float,
         nargs=9,
-        #default=[1., 0., 0., 0., 1., 0., 0., 0., 1.],
-        #default=[0., 0., -1., -1., 0., 0., 0., 1., 0.],
-        #default=[0., -1., 0., 0., 0., 1., -1., 0., 0.],
         default=[0., 0., -1., -1., 0., 0., 0., 1., 0.],
         help="The bases vectors (three values for each basis) for the camera in a right-hand system.")
     parser.add_argument(
@@ -200,7 +198,6 @@ def main():
         with open(args.letter_config, 'r') as letter_file:
             letter_locations = yaml.safe_load(letter_file)
         for letter in letter_locations.keys():
-            # TODO Add the letter to the renderer at the given location
             renderer.addLetter(letter, letter_locations[letter])
 
     renderer.beginVideo(args.output_path)
