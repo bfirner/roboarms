@@ -5,17 +5,22 @@
 
 
 import argparse
+import csv
+import io
+import math
+import os
 import pathlib
 import random
 import sys
 import time
 import yaml
 
+from pathlib import Path
 from queue import Queue
 from threading import Thread
 
-from arm_utility import (ArmReplay, computeGripperPosition, getCalibrationDiff, rSolver, XYZToRThetaZ)
-from data_utility import (ArmDataInterpolator, readArmRecords)
+from arm_utility import (rSolver, XYZToRThetaZ)
+from data_utility import (writeLabels, writeYamlArmRecords)
 import sim_utility
 
 def xyzToSolvedPosition(xyz_positions, hand_length):
@@ -114,7 +119,8 @@ def main():
     parser.add_argument(
         'output_path',
         type=str,
-        help="The video file to save the robot poses into.")
+        help="The directory serving as the base path for the video, labels, etc. Will create "
+        "intermediate paths and overwrite data in existing directories.")
     parser.add_argument(
         'letter_config',
         type=str,
@@ -150,8 +156,24 @@ def main():
             letter_locations[letter][0][2] + (letter_locations[letter][2][2] - letter_locations[letter][0][2])/2.,
         ]
 
+    # Open the output path
+    Path(args.output_path).mkdir(parents=True, exist_ok=True)
+
+    # Prepare the video rendering and timestamp file
+    renderer.beginVideo(os.path.join(args.output_path, "sim_video.mp4"))
+    # TODO Technically this should be checked for failure.
+    timestamp_csv_file = io.open(os.path.join(args.output_path, "sim_video.csv"), "w")
+    timestamps = csv.writer(timestamp_csv_file, delimiter=",")
+    timestamps.writerow(["frame_number", "time_sec", "time_ns"])
+
+    # Labelling setup
+    labels_file = os.path.join(args.output_path, "labels.yaml")
+    labels = {}
+    # Segment behaviors and maneuver begin/end marks. All set to None unless there is a label
+    labels['behavior'] = []
+    labels['mark'] = []
+
     # Get the action config
-    renderer.beginVideo(args.output_path)
     with open(args.action_config, 'r') as action_file:
         actions = yaml.safe_load(action_file)
 
@@ -161,6 +183,15 @@ def main():
     sequence_completions = 0
     sequence_position = 0
     speed_per_frame = args.robot_speed / args.fps
+    # ROS uses nanoseconds
+    nanos_per_frame = (1.0 / args.fps) * 10**9
+
+    # For the arm records used during dataprep
+    record_seconds = []
+    record_nanos = []
+    record_joints = []
+    total_distance = 0.
+    record_distances = []
 
     # Get the target position, with noise and offsets as configured
     target_letter = actions['sequence'][sequence_position]
@@ -182,21 +213,41 @@ def main():
             # Set the next target position, with random noise
             target_letter = actions['sequence'][sequence_position]
             target_position = pointPlusNoise(letter_centers[target_letter], actions['target_offsets'], actions['target_noise'])
+            labels['mark'].append(None)
         elif distance_remaining <= speed_per_frame:
             # Move to the target position
             cur_position = target_position
+            labels['mark'].append(target_letter)
+            total_distance += distance_remaining
         else:
             # Incrementally approach at args.robot_speed. The speed_per_frame < distance_remaining
             # (the alternative was checked in the previous if condition).
             increment = speed_per_frame / distance_remaining
             cur_position = [cur + inc for (cur, inc) in zip(cur_position, [axis * increment for axis in delta])]
+            labels['mark'].append(None)
+            total_distance += speed_per_frame
 
         joint_positions = xyzToSolvedPosition(xyz_positions=cur_position, hand_length=args.hand_length)
 
-        # Render the joint positions
+        # Render the joint positions and timestamps
         renderer.writeFrame(joint_positions)
+        timestamps.writerow([
+            total_frames,
+            total_frames // args.fps,
+            math.floor((total_frames % args.fps) * nanos_per_frame)])
+        labels['behavior'].append('keep')
+        record_seconds.append(total_frames // args.fps)
+        record_nanos.append((total_frames % args.fps) * nanos_per_frame)
+        record_joints.append(joint_positions)
+        record_distances.append(total_distance)
         total_frames += 1
     renderer.endVideo()
+    # Close the csv file
+    timestamp_csv_file.close()
+    # Write the labels
+    writeLabels(labels_file, labels)
+    # Write the arm records
+    writeYamlArmRecords(os.path.join(args.output_path, "records.yaml"), record_seconds, record_nanos, record_joints, record_distances)
 
     print("Finished rendering {} frames.".format(total_frames))
 

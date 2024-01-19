@@ -16,7 +16,6 @@ import numpy
 import os
 import pathlib
 import sys
-import yaml
 
 from arm_utility import (getDistance, getGripperPosition)
 # These are the robot descriptions to match function calls in the modern robotics package.

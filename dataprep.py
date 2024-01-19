@@ -186,10 +186,15 @@ def main():
     parser.add_argument(
         '--video_prefix',
         required=False,
-        default='robot_video_',
+        default='robo_video_',
         type=str,
         help='The prefix of the video to use for dataset creation.')
-    # TODO Add a video prefix to allow matching to sim videos
+    parser.add_argument(
+        '--yaml_records',
+        required=False,
+        default=None,
+        type=str,
+        help='If set, read records from a yaml file rather than using messages from a rosbag.')
 
     args = parser.parse_args()
 
@@ -211,17 +216,24 @@ def main():
         path = pathlib.Path(rosdir)
 
         # There should be a single file match for each of these paths.
-        db_paths = list(path.glob("rosbag2*.db3"))
-        ts_paths = list(path.glob("robo_video_*.csv"))
+        ts_paths = list(path.glob("{}*.csv".format(args.video_prefix)))
         vid_paths = list(path.glob("{}*.mp4".format(args.video_prefix)))
 
         # Perform some sanity checks
-        if 0 == len(db_paths):
-            print("No database found in bag path {}".format(rosdir))
-            return
-        if 1 < len(db_paths):
-            print("Too many (expecing 1) db files found in {}".format(rosdir))
-            return
+
+        if args.label_file is None:
+            db_paths = list(path.glob("rosbag2*.db3"))
+            if 0 == len(db_paths):
+                print("No database found in bag path {}".format(rosdir))
+                return
+            if 1 < len(db_paths):
+                print("Too many (expecing 1) db files found in {}".format(rosdir))
+                return
+        else:
+            record_paths = list(path.glob(args.label_file))
+            if 1 != len(record_paths):
+                print("Requested records file does not exist.")
+                return
 
         if 0 == len(ts_paths):
             print("No video timestamp found in bag path {}".format(rosdir))
@@ -232,7 +244,7 @@ def main():
         ts_path = ts_paths[0]
 
         if 0 == len(vid_paths):
-            print("No database found in bag path {}".format(rosdir))
+            print("No video found in bag path {}".format(rosdir))
             return
         if 1 < len(vid_paths):
             print("Too many (expecing 1) db files found in {}".format(rosdir))
@@ -244,9 +256,13 @@ def main():
         # Set up readers for the timestamps, video, and database
         video_timestamps = readVideoTimestamps(ts_path)
 
-        # Open the rosbag db file and read the arm topic
-        arm_topic = f"/{args.train_robot}/joint_states"
-        arm_data = ArmDataInterpolator(readArmRecords(rosdir, arm_topic))
+        if args.yaml_records is None:
+            # Open the rosbag db file and read the arm topic
+            arm_topic = f"/{args.train_robot}/joint_states"
+            arm_data = ArmDataInterpolator(readArmRecords(rosdir, arm_topic))
+        else:
+            # All data is coming from a yaml file
+            arm_data = ArmDataInterpolator(readLabels(os.path.join(rosdir, args.yaml_records)))
 
         # Now go through video frames.
         width, height, total_frames = getVideoInfo(vid_path)
@@ -408,7 +424,7 @@ def main():
                             sample_labels["goal_mark"] = next_mark
                             # Get the distance to the next mark
                             goal_record = arm_data.records[int(frame_nums[-1]) + next_mark_idx]
-                            goal_pos = computeGripperPosition(args.robot_model, getCalibratedJoints(goal_record, ordered_joint_names, calibration))
+                            goal_pos = computeGripperPosition(getCalibratedJoints(goal_record, ordered_joint_names, calibration))
                             sample_labels["goal_distance"] = getDistance(cur_pos, goal_pos)
 
                             # Go backwards to create several different status inputs for previous mark
@@ -418,7 +434,7 @@ def main():
                                 # Use a default 10cm distance if the distance to the goal didn't exist
                                 sample_labels["goal_distance_prev_1cm"] = 0.1
                             else:
-                                prev_1cm_pos = computeGripperPosition(args.robot_model, getCalibratedJoints(prev_1cm_record, ordered_joint_names, calibration))
+                                prev_1cm_pos = computeGripperPosition(getCalibratedJoints(prev_1cm_record, ordered_joint_names, calibration))
                                 sample_labels["goal_distance_prev_1cm"] = getDistance(prev_1cm_pos, goal_pos)
 
                             prev_2cm_record = arm_data.get_record_at_distance(0.02)
@@ -426,7 +442,7 @@ def main():
                                 # Use a default 10cm distance if the distance to the goal didn't exist
                                 sample_labels["goal_distance_prev_2cm"] = 0.1
                             else:
-                                prev_2cm_pos = computeGripperPosition(args.robot_model, getCalibratedJoints(prev_2cm_record, ordered_joint_names, calibration))
+                                prev_2cm_pos = computeGripperPosition(getCalibratedJoints(prev_2cm_record, ordered_joint_names, calibration))
                                 sample_labels["goal_distance_prev_2cm"] = getDistance(prev_2cm_pos, goal_pos)
 
                             prev_3cm_record = arm_data.get_record_at_distance(0.03)
@@ -434,7 +450,7 @@ def main():
                                 # Use a default 10cm distance if the distance to the goal didn't exist
                                 sample_labels["goal_distance_prev_3cm"] = 0.1
                             else:
-                                prev_3cm_pos = computeGripperPosition(args.robot_model, getCalibratedJoints(prev_3cm_record, ordered_joint_names, calibration))
+                                prev_3cm_pos = computeGripperPosition(getCalibratedJoints(prev_3cm_record, ordered_joint_names, calibration))
                                 sample_labels["goal_distance_prev_3cm"] = getDistance(prev_3cm_pos, goal_pos)
 
                         sample_labels['metadata_cur_frame'] = current_frame

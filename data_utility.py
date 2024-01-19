@@ -9,6 +9,7 @@ import os
 import yaml
 
 from arm_utility import (getDistance, getGripperPosition)
+# This package requires the rosbag2, but doesn't necessarily require ROS2 (according to docs)
 from nml_bag import Reader
 
 
@@ -135,6 +136,36 @@ def readArmRecords(bag_path, arm_topic):
             # Add the new record for this arm topic message
             arm_records.append(data)
     return arm_records
+
+
+def readYamlArmRecords(yaml_path):
+    # If the labels aren't there then return an empty table.
+    if not os.path.exists(labels_path):
+        return {}
+    # TODO Should check to make sure that there aren't any errors during loading or parsing.
+    labels = yaml.load(io.open(labels_path, "r", newline=None), Loader=yaml.SafeLoader)
+
+
+def writeYamlArmRecords(data_path, seconds, nanoseconds, joints, total_distance):
+    """Write ros-like records as pure json.
+
+    Velocity and effort values will be filled in with 0s.
+    """
+    # TODO Group into an array of dicts with the timestamp, name, position, velocity, and effort
+    # keys. The name should always be the names of the joints
+    joint_names = ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate', 'gripper', 'left_finger', 'right_finger']
+    records = [{
+        'timestamp': time_sec * 10**9 + time_ns,
+        'name': joint_names,
+        'position': positions,
+        'velocity': [0.] * len(positions),
+        'effort': [0.] * len(positions),
+        'total_distance': total,
+        } for time_sec, time_ns, positions, total in zip(seconds, nanoseconds, joints, total_distance)]
+    
+    label_file = io.open(data_path, "w", newline=None)
+    label_file.write(yaml.dump(records))
+    label_file.close()
 
 
 def readLabels(labels_path):
