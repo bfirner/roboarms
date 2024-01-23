@@ -116,6 +116,12 @@ parser.add_argument(
     "convnextxt", "convnextt", "convnexts", "convnextb"],
     help="Model to use for training.")
 parser.add_argument(
+    '--lr',
+    type=float,
+    required=False,
+    default=None,
+    help="Learning rate, or the default for the model if None.")
+parser.add_argument(
     '--no_train',
     required=False,
     default=False,
@@ -421,24 +427,28 @@ if 'alexnet' == args.modeltype:
     model_args['linear_size'] = 512
     model_args['skip_last_relu'] = True
     net = AlexLikeNet(**model_args).cuda()
-    optimizer = torch.optim.SGD(net.parameters(), lr=10e-4)
+    lr = 10e-4 if args.lr is None else args.lr
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[3,5,7], gamma=0.2)
     use_amp = True
 elif 'resnet18' == args.modeltype:
     # Model specific arguments
     model_args['expanded_linear'] = True
     net = ResNet18(**model_args).cuda()
-    optimizer = torch.optim.SGD(net.parameters(), lr=10e-5)
+    lr = 10e-5 if args.lr is None else args.lr
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr)
 elif 'resnet34' == args.modeltype:
     # Model specific arguments
     model_args['expanded_linear'] = True
     net = ResNet34(**model_args).cuda()
-    optimizer = torch.optim.Adam(net.parameters(), lr=10e-5)
+    lr = 10e-5 if args.lr is None else args.lr
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr)
 elif 'bennet' == args.modeltype:
     net = BenNet(**model_args).cuda()
     #optimizer = torch.optim.AdamW(net.parameters(), lr=10e-5)
     #optimizer = torch.optim.Adam(net.parameters(), lr=10e-3)
-    optimizer = torch.optim.SGD(net.parameters(), lr=0.001, momentum=0.5, weight_decay=0.001, nesterov=True)
+    lr = 0.001 if args.lr is None else args.lr
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.5, weight_decay=0.001, nesterov=True)
     milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20]
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
 elif 'compactingbennet' == args.modeltype:
@@ -447,19 +457,23 @@ elif 'compactingbennet' == args.modeltype:
     #optimizer = torch.optim.Adam(net.parameters(), lr=10e-3)
     #optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.001, nesterov=True)
     # Tuned with args.normalize_outputs
-    optimizer = torch.optim.SGD(net.parameters(), lr=10e-5, momentum=0.5, weight_decay=0.001, nesterov=True)
+    lr = 10e-5 if args.lr is None else args.lr
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.5, weight_decay=0.001, nesterov=True)
     milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20]
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
 elif 'dragonfly' == args.modeltype:
     net = DFNet(**model_args).cuda()
-    optimizer = torch.optim.SGD(net.parameters(), lr=0.008, momentum=0.5, weight_decay=0.001, nesterov=True)
+    #optimizer = torch.optim.SGD(net.parameters(), lr=10e-5, momentum=0.5, weight_decay=0.001, nesterov=True)
+    lr = 0.008 if args.lr is None else args.lr
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.5, weight_decay=0.001, nesterov=True)
     milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20]
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
 elif 'resnext50' == args.modeltype:
     # Model specific arguments
     model_args['expanded_linear'] = True
     net = ResNext50(**model_args).cuda()
-    optimizer = torch.optim.SGD(net.parameters(), lr=10e-2, weight_decay=10e-4, momentum=0.9)
+    lr = 10e-2 if args.lr is None else args.lr
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr, weight_decay=10e-4, momentum=0.9)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[1,2,3], gamma=0.1)
     batch_size = 64
 elif 'resnext34' == args.modeltype:
@@ -468,7 +482,8 @@ elif 'resnext34' == args.modeltype:
     model_args['use_dropout'] = False
     # Learning parameters were tuned on a dataset with about 80,000 examples
     net = ResNext34(**model_args).cuda()
-    optimizer = torch.optim.SGD(net.parameters(), lr=10e-2, weight_decay=10e-4, momentum=0.9)
+    lr = 10e-2 if args.lr is None else args.lr
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr, weight_decay=10e-4, momentum=0.9)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[2,5,9], gamma=0.2)
 elif 'resnext18' == args.modeltype:
     # Model specific arguments
@@ -476,25 +491,30 @@ elif 'resnext18' == args.modeltype:
     model_args['use_dropout'] = False
     # Learning parameters were tuned on a dataset with about 80,000 examples
     net = ResNext18(**model_args).cuda()
-    optimizer = torch.optim.SGD(net.parameters(), lr=10e-2, weight_decay=10e-4, momentum=0.9)
+    lr = 10e-2 if args.lr is None else args.lr
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr, weight_decay=10e-4, momentum=0.9)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[2,5,12], gamma=0.2)
 elif 'convnextxt' == args.modeltype:
     net = ConvNextExtraTiny(**model_args).cuda()
-    optimizer = torch.optim.SGD(net.parameters(), lr=10e-4, weight_decay=10e-4, momentum=0.9,
+    lr = 10e-4 if args.lr is None else args.lr
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr, weight_decay=10e-4, momentum=0.9,
             nesterov=True)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[4,5,12], gamma=0.2)
     use_amp = True
 elif 'convnextt' == args.modeltype:
     net = ConvNextTiny(**model_args).cuda()
-    optimizer = torch.optim.SGD(net.parameters(), lr=10e-2, weight_decay=10e-4, momentum=0.9)
+    lr = 10e-2 if args.lr is None else args.lr
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr, weight_decay=10e-4, momentum=0.9)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[2,5,12], gamma=0.2)
 elif 'convnexts' == args.modeltype:
     net = ConvNextSmall(**model_args).cuda()
-    optimizer = torch.optim.SGD(net.parameters(), lr=10e-2, weight_decay=10e-4, momentum=0.9)
+    lr = 10e-2 if args.lr is None else args.lr
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr, weight_decay=10e-4, momentum=0.9)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[2,5,12], gamma=0.2)
 elif 'convnextb' == args.modeltype:
     net = ConvNextBase(**model_args).cuda()
-    optimizer = torch.optim.SGD(net.parameters(), lr=10e-2, weight_decay=10e-4, momentum=0.9)
+    lr = 10e-2 if args.lr is None else args.lr
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr, weight_decay=10e-4, momentum=0.9)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[2,5,12], gamma=0.2)
 print(f"Model is {net}")
 
