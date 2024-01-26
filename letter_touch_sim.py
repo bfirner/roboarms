@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # This script renders synthetic data with a robot arm touching a sequence of letters.
-# Copyright 2023 Bernhard Firner
+# Copyright 2024 Bernhard Firner
 
 
 import argparse

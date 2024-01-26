@@ -3,11 +3,13 @@
 # The letter targets and their locations are defined in another file, this only captures behaviors
 
 # The sequence of letters to move to
-sequence: ['A', 'I', 'B', 'H']
+#sequence: ['A', 'I', 'B', 'H']
+sequence: ['A', 'H', 'B', 'I']
 repeats: 10
 # 0.5cm stddev noise in the placement in all dimensions, z is offset by 3cm so the arm doesn't go too low.
 target_offsets: [0., 0., 0.03]
 target_noise: [0.005, 0.005, 0.005]
+#target_noise: [0.0, 0.0, 0.0]
 
 # Arm config
 arm_start: [0.15, 0.00, 0.05]

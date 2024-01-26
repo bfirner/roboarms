@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# This script runs a trained neural network to control a robot arm..
+# This script runs a trained neural network to control a robot arm.
 # Copyright 2023 Bernhard Firner
 
 
