@@ -96,7 +96,8 @@ def main():
         elif "target_xyz_position" in checkpoint['metadata']['labels']:
             dnn_output_to_xyz = lambda out: out[0].tolist()
         elif "target_rtz_position" in checkpoint['metadata']['labels']:
-            dnn_output_to_xyz = lambda out: RThetaZtoXYZ(*out[0].tolist())
+            rtz_slice = slice(labels.index('target_rtz_position'), labels.index('target_rtz_position')+3)
+            dnn_output_to_xyz = lambda out: RThetaZtoXYZ(*out[0,rtz_slice].tolist())
         elif "current_xyz_position" in checkpoint['metadata']['labels']:
             dnn_output_to_xyz = lambda out: out[0].tolist()
         elif "rtz_classifier" in checkpoint['metadata']['labels']:
@@ -118,9 +119,12 @@ def main():
         if 'target_xyz_position' not in decode_strs:
             decode_strs.append('target_xyz_position')
 
+        # Decode directly to torch memory
+        channels = 1
+        image_decode_str = "torchl" if 1 == channels else "torchrgb"
         label_dataset = (
             wds.WebDataset(args.dataset)
-            .decode("l")
+            .decode(image_decode_str)
             .to_tuple(*decode_strs)
         )
 
@@ -199,6 +203,13 @@ def main():
                 else:
                     output = net(image)
 
+            if i < 32:
+                from torchvision import transforms
+                with torch.no_grad():
+                    print("input {} vector inputs {}".format(i, vector_inputs))
+                    img = transforms.ToPILImage()(image[0][0]).convert('L')
+                    img.save("cat_img_{}.png".format(i, 0))
+
             if denormalizer is not None:
                 output = denormalizer(output)
             # Onl
@@ -232,6 +243,7 @@ def main():
 
                 # Save the feature maps
                 if i < args.save_features:
+                    from torchvision import transforms
                     for layer_i, fmap in enumerate(maps):
                         # Put all of the maps onto the same channel and save them as an image
                         tiled_shape = (1, fmap.size(1)*fmap.size(2), fmap.size(3))
@@ -258,7 +270,11 @@ def main():
                 tiled_shape = (image.size(1), args.save_images*image.size(2), image.size(3))
                 tiled_images = torch.zeros(tiled_shape)
             y_offset = i*image.size(2)
-            tiled_images[:,y_offset:y_offset+image.size(2),:] = image[0]
+            # If the image was normalized, reprocess and clamp so it will be displayed properly.
+            if checkpoint['metadata']['normalize_images']:
+                tiled_images[:,y_offset:y_offset+image.size(2),:] = (image[0]+0.5).clamp(min=0., max=1.)
+            else:
+                tiled_images[:,y_offset:y_offset+image.size(2),:] = image[0]
             tile_locations.append(current_position)
 
     if 0 < args.save_images:
