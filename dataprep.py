@@ -421,7 +421,8 @@ def main():
                         cur_pos = sample_labels["current_xyz_position"]
                         if next_mark is not None:
                             # The goal mark is the one currently being moved towards
-                            sample_labels["goal_mark"] = next_mark
+                            # Convert from a character to a number (A maps to 0, B to 1, etc)
+                            sample_labels["goal_mark"] = ord(next_mark) - ord('A')
                             # Get the distance to the next mark
                             goal_record = arm_data.records[int(frame_nums[-1]) + next_mark_idx]
                             goal_pos = computeGripperPosition(getCalibratedJoints(goal_record, ordered_joint_names, calibration))
