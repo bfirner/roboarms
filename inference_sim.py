@@ -14,16 +14,12 @@ import time
 import torch
 import yaml
 
-from queue import Queue
-from threading import Event, Lock, Thread
-
-# Ros includes
-from rclpy.node import Node
-from sensor_msgs.msg import (Image, JointState)
+# TODO Is this necessary?
+from threading import Event
 
 # Includes from this project
-from arm_utility import (ArmReplay, computeGripperPosition, getDistance, interpretRTZPrediction, rSolver, RThetaZtoXYZ, XYZToRThetaZ)
-from data_utility import vidSamplingCommonCrop
+import sim_utility
+from arm_utility import (computeGripperPosition, interpretRTZPrediction, rSolver, XYZToRThetaZ)
 
 
 # Insert the bee analysis repository into the path so that the python modules of the git submodule
@@ -33,7 +29,8 @@ sys.path.append('bee_analysis')
 
 from bee_analysis.utility.model_utility import (createModel2, hasNormalizers, restoreModel,
         restoreNormalizers)
-
+from bee_analysis.utility.video_utility import (vidSamplingCommonCrop)
+ 
 
 # Terminate inference when the user kills the program
 # TODO Use an event to terminate instead of a variable
@@ -136,25 +133,13 @@ def main():
         type=int,
         required=False,
         default=0,
-        help='The offset (in pixels) of the crop location on the original image in the x dimension.')
+        help='The offset (in pixels) of the crop location from the center of the scaled image in the x dimension.')
     parser.add_argument(
         '--crop_y_offset',
         type=int,
         required=False,
         default=0,
-        help='The offset (in pixels) of the crop location on the original image in the y dimension.')
-    parser.add_argument(
-        '--width',
-        type=int,
-        required=False,
-        default=224,
-        help='Width of output images (obtained via cropping, after applying scale).')
-    parser.add_argument(
-        '--height',
-        type=int,
-        required=False,
-        default=224,
-        help='Height of output images (obtained via cropping, after applying scale).')
+        help='The offset (in pixels) of the crop location from the center of the scaled image in the y dimension.')
     parser.add_argument(
         '--out_channels',
         type=int,
@@ -175,52 +160,11 @@ def main():
         type=str,
         required=True,
         help='File with model weights to restore.')
-    parser.add_argument(
-        '--interval',
-        type=int,
-        required=False,
-        default=0,
-        help='Frames to skip between frames in a sample.')
-    parser.add_argument(
-        '--frames_per_sample',
-        type=int,
-        required=False,
-        default=1,
-        help='Number of frames in each sample.')
-    parser.add_argument(
-        '--image_topic',
-        type=str,
-        required=False,
-        default="/image_raw",
-        help='The name of the image topic.')
-    parser.add_argument(
-        '--dnn_outputs',
-        type=str,
-        # Support an array of strings to have multiple different label targets.
-        nargs='+',
-        required=False,
-        default=["target_position"],
-        help='DNN outputs')
-    parser.add_argument(
-        '--vector_inputs',
-        type=str,
-        # Support an array of strings to have multiple different label targets.
-        nargs='+',
-        required=False,
-        default=[],
-        help='DNN vector inputs')
-    parser.add_argument(
-        '--normalize_video',
-        required=False,
-        default=False,
-        action="store_true",
-        help=("Normalize video: input = (input - mean) / stddev. "
-            "Some normalization is already done through ffmpeg, but png and jpeg differences could be fixed with this."))
 
     # Parse the arguments
     args = parser.parse_args(sys.argv[1:])
 
-    ################ Sim setup
+    ################ Sim renderer setup
     # Create the renderer
     segment_lengths = [0.104, 0.158, 0.147, args.hand_length]
     arm_origin = args.robot_coordinates
@@ -249,22 +193,6 @@ def main():
 
     ################ DNN setup
     num_arm_joints = 5
-    # Find the size of the model image inputs, vector inputs, and outputs
-    vector_input_size = 0
-    for input_name in args.vector_inputs:
-        # Vector inputs are size 1 unless they are the current robot position
-        if input_name == 'current_arm_position':
-            vector_input_size += num_arm_joints
-        else:
-            vector_input_size += 1
-
-    dnn_output_size = 0
-    for output_name in args.dnn_outputs:
-        # Outputs are size 1 unless they are the predicted robot position
-        if output_name == 'target_arm_position':
-            dnn_output_size += num_arm_joints
-        else:
-            dnn_output_size += 1
 
     # Create the model and load the weights from the given checkpoint.
     checkpoint = torch.load(args.model_checkpoint)
@@ -279,13 +207,37 @@ def main():
         denormalizer = None
     net.eval().cuda()
 
+    print(checkpoint['metadata'])
+
+    vector_names = checkpoint['metadata']['vector_inputs']
+    dnn_outputs = checkpoint['metadata']['labels']
+    patch_height = checkpoint['metadata']['model_args']['in_dimensions'][1]
+    patch_width = checkpoint['metadata']['model_args']['in_dimensions'][2]
+
+    # Find the size of the model image inputs, vector inputs, and outputs
+    vector_input_size = 0
+    for input_name in vector_names:
+        # Vector inputs are size 1 unless they are the current robot position
+        if input_name == 'current_arm_position':
+            vector_input_size += num_arm_joints
+        else:
+            vector_input_size += 1
+
+    dnn_output_size = 0
+    for output_name in dnn_outputs:
+        # Outputs are size 1 unless they are the predicted robot position
+        if output_name == 'target_arm_position':
+            dnn_output_size += num_arm_joints
+        else:
+            dnn_output_size += 1
+
     # Initialize the vector inputs tensor
     goal_idx = 0
     vector_input_locations = {}
     vector_size = 0
     # History goal distance is initialized to 10cm
     prev_goal_distance = 0.1
-    for input_name in vector_inputs:
+    for input_name in vector_names:
         # Vector inputs are size 1 unless they are the current robot position
         if input_name == 'current_position':
             # This uses all joints. 'current_arm_position' has only the arm ones
@@ -315,7 +267,7 @@ def main():
     # Mark the locations of the model outputs
     output_locations = {}
     out_idx = 0
-    for output_name in args.dnn_outputs:
+    for output_name in dnn_outputs:
         if output_name == 'target_position':
             output_locations[output_name] = slice(out_idx, out_idx+num_arm_joints + 3)
             out_idx += num_arm_joints + 3
@@ -324,7 +276,7 @@ def main():
             out_idx += num_arm_joints
         elif output_name == 'target_rtz_position':
             output_locations[output_name] = slice(out_idx, out_idx+3)
-            out_idx += num_arm_joints
+            out_idx += 3
         elif output_name == 'rtz_classifier':
             rtz_classifier_size = 10
             output_locations[output_name] = slice(out_idx, out_idx+rtz_classifier_size)
@@ -334,27 +286,31 @@ def main():
             out_idx +=1
 
 
+    # Need to handle the video by using the provided scaling, cropping, and offset parameters
+    out_width, out_height, crop_x, crop_y = vidSamplingCommonCrop(
+        args.resolution[0], args.resolution[1], patch_height, patch_width, args.video_scale,
+        round(args.video_scale*args.crop_x_offset), round(args.video_scale*args.crop_y_offset))
+    scaled_height = round(args.resolution[0] * args.video_scale)
+    scaled_width = round(args.resolution[1] * args.video_scale)
+    def process_image(img, channels = 1):
+        # The internet
+        # (https://stackoverflow.com/questions/23853632/which-kind-of-interpolation-best-for-resizing-image
+        # from https://docs.opencv.org/3.4/da/d54/group__imgproc__transform.html#ga47a974309e9102f5f08231edc7e7529d)
+        # suggests using INTER_AREA when downscaling images.
+        scaled_image = cv2.resize(img, (scaled_width, scaled_height), interpolation=cv2.INTER_AREA)
+        cropped_image = scaled_image[crop_y:crop_y+patch_height, crop_x:crop_x+patch_width, :]
+        # The opencv image form has channels last
+        if channels > 1:
+            cuda_image = torch.tensor(numpy.array([cropped_image[:,:,channel] for channel in range(3)])).cuda()
+        else:
+            cuda_image = torch.tensor(cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)).float().expand(1, -1, -1).cuda()
+        # Give some hints to memory management
+        del cropped_image
+        del scaled_image
+        return cuda_image
 
 
-    # TODO Need to handle the video by using these parameters
-    video_args = {
-        # Subscribe to the calibrated joint positions so that processing is robot agnostic
-        'arm_topic_string': "/{}/calibrated_joint_states".format(args.puppet_name),
-        'video_topic_string': args.image_topic,
-        'scale': args.video_scale,
-        'crop_width': args.width,
-        'crop_height': args.height,
-        'crop_x': args.crop_x_offset,
-        'crop_y': args.crop_y_offset,
-        'frames_per_sample': args.frames_per_sample,
-        'channels_per_frame': args.out_channels
-    }
-
-    # Start the DNN inference thread before calling the blocking start_robot() call.
-    # TODO FIXME Put this setup boilerplate into a common location
-
-
-    # TODO Initialize robot arm position and renderer
+    # Initialize robot arm position and goal information
 
     # Set up some local variables
     cur_position = actions['arm_start']
@@ -363,30 +319,62 @@ def main():
 
     # Get the target position, with noise and offsets as configured
     target_letter = actions['sequence'][goal_idx]
-    target_position = letter_centers[target_letter], actions['target_offsets'], actions['target_noise'])
+    gt_target_position = letter_centers[target_letter]
 
+    # TODO This was a training parameter, it should be pulled from the dataset
+    # Setting the threshold to 1cm here
+    touch_threshold = 0.01
 
-    # TODO Generate the first frame
+    # Generate current arm joints
+    cur_rtz_position = XYZToRThetaZ(*cur_position)
+    # Solve for the joint positions
+    middle_joints = rSolver(cur_rtz_position[0], cur_rtz_position[2], segment_lengths)
+    cur_joints = [
+        # Waist
+        cur_rtz_position[1],
+        # Shoulder
+        middle_joints[0],
+        # Elbow
+        middle_joints[1],
+        # Wrist angle
+        middle_joints[2],
+        # Wrist rotate
+        0.0,
+    ]
+
+    # Fixed size window
+    cv2.namedWindow("arm sim", cv2.WINDOW_NORMAL)
 
     with torch.no_grad():
         # Keep simulating until the exit event is called.
         while not exit_event.is_set():
+            total_frames += 1
+            img = renderer.render(cur_joints)
+            print("Frame {}".format(total_frames))
+            # Draw the image to the screen
+            cv2.imshow("arm sim", img)
+            if 1 == total_frames:
+                cv2.resizeWindow("arm sim", img.shape[1], img.shape[0])
+            cv2.pollKey()
+
             # Forward the frame through the DNN model
             # This always uses the most recent frame, so if the update rate is much faster than the
             # frame rate the only thing that will update between commands is the robot's current
             # position.
-            # TODO Get the image from the renderer
-            # TODO new_frame should have image data
-            # TODO joint_positions should have arm state
+            # The image from the renderer is in the img variable. Process it for DNN input.
+            # This will also convert the image to grayscale
+            new_frame = process_image(img)
 
-            new_frame = new_frame.cuda()
             # Normalize inputs: input = (input - mean)/stddev
             if checkpoint['metadata']['normalize_images']:
                 v, m = torch.var_mean(new_frame)
                 new_frame = (new_frame - m) / v
 
+            print("Frame min and max are {} and {}".format(new_frame[0].min(), new_frame[0].max()))
+            cv2.imwrite("frame_{}.png".format(total_frames), (255*(0.5+new_frame[0])).clamp(min=0., max=255.).cpu().view(280, 400, 1).numpy())
+
             # Fill in vector inputs
-            for input_name in args.vector_inputs:
+            for input_name in vector_names:
                 # Vector inputs are size 1 unless they are the current robot position
                 outslice = vector_input_locations[input_name]
                 if input_name == 'current_position':
@@ -394,42 +382,60 @@ def main():
                 elif input_name == 'current_arm_position':
                     vector_input_buffer[0, outslice].copy_(torch.tensor(joint_positions))
                 elif input_name == 'current_rtz_position':
-                    current_rtz_position = XYZToRThetaZ(*computeGripperPosition(joint_positions, segment_lengths=[0.104, 0.158, 0.147, 0.175]))
+                    current_rtz_position = XYZToRThetaZ(*computeGripperPosition(joint_positions, segment_lengths))
                     print("Writing location {} into slice {}".format(current_rtz_position, outslice))
                     vector_input_buffer[0, outslice].copy_(torch.tensor(current_rtz_position))
                 elif input_name == 'goal_mark':
                     # Convert the goal character into a number. 'A' becomes 0, and the rest of the
                     # letters are offset from there.
-                    vector_input_buffer[0, outslice.start] = ord(actions.sequence[goal_idx]) - ord('A')
+                    vector_input_buffer[0, outslice] = ord(actions['sequence'][goal_idx]) - ord('A')
+                    # TODO FIXME This would be better as a one-hot vector.
+                    print("Goal mark is {}".format(vector_input_buffer[0, outslice]))
                 elif input_name[:len("goal_distance_prev_")] == "goal_distance_prev_":
-                    vector_input_buffer[0, outslice.start] = prev_goal_distance
+                    vector_input_buffer[0, outslice] = prev_goal_distance
 
             # goal_mark determines the state to feed back to the network via the vector inputs
             # goal_distance is used to determine when to switch goals.
-            # The target_position output contains the next set of joint positions.
 
-            if 0 == len(args.vector_inputs):
-                net_out = net(new_frame)
+            if 0 == len(vector_names):
+                # Expand a batch dimension and forward
+                net_out = net(new_frame.expand(1, -1, -1, -1))
             else:
-                net_out = net(new_frame, vector_input_buffer)
+                # Expand a batch dimension and forward
+                net_out = net(new_frame.expand(1, -1, -1, -1), vector_input_buffer)
             if denormalizer is not None:
                 net_out = denormalizer(net_out)
             predicted_distance = 1.0
-            if 'goal_distance' in args.dnn_outputs:
-                net_out[0, output_locations['goal_distance']].item()
+            if 'goal_distance' in dnn_outputs:
+                predicted_distance = net_out[0, output_locations['goal_distance']].item()
+                print("predicted goal distance is {}".format(predicted_distance))
             if 'target_arm_position' in output_locations:
                 next_position = net_out[0, output_locations['target_arm_position']].tolist()
+            elif "target_rtz_position" in checkpoint['metadata']['labels']:
+                predictions = net_out[0, output_locations['target_rtz_position']].tolist()
+                # Solve for the joint positions
+                print("Network predicted rtz: {}".format(predictions))
+                middle_joints = rSolver(predictions[0], predictions[2], segment_lengths)
+                cur_joints = [
+                    # Waist
+                    predictions[1],
+                    # Shoulder
+                    middle_joints[0],
+                    # Elbow
+                    middle_joints[1],
+                    # Wrist angle
+                    middle_joints[2],
+                    # Wrist rotate
+                    0.0,
+                ]
+                print("joints updating to {}".format(cur_joints))
             elif 'rtz_classifier' in output_locations:
-                # TODO This was a training parameter, it should be pulled from the dataset
-                # Setting the threshold to 1cm here
-                threshold = 0.01
                 current_xyz = computeGripperPosition(joint_positions)
                 predictions = net_out[0, output_locations['rtz_classifier']].tolist()
-                next_rtz_position = interpretRTZPrediction(*XYZToRThetaZ(*current_xyz), threshold, predictions)
-                next_xyz_position = RThetaZtoXYZ(*next_rtz_position)
+                next_rtz_position = interpretRTZPrediction(*XYZToRThetaZ(*current_xyz), touch_threshold, predictions)
                 # Solve for the joint positions
-                middle_joints = rSolver(next_rtz_position[0], next_rtz_position[2], segment_lengths=[0.104, 0.158, 0.147, 0.175])
-                next_position = [
+                middle_joints = rSolver(next_rtz_position[0], next_rtz_position[2], segment_lengths)
+                cur_joints = [
                     # Waist
                     next_rtz_position[1],
                     # Shoulder
@@ -444,7 +450,7 @@ def main():
             else:
                 raise RuntimeError("No target position for robot in DNN outputs!")
 
-            # TODO This shouldn't be a magic variable
+            # TODO The threshold shouldn't be a magic variable
             if predicted_distance < 0.01:
                 goal_idx = (goal_idx + 1) % len(actions.sequence)
                 print("Switching to goal {}".format(actions.sequence[goal_idx]))
@@ -454,10 +460,14 @@ def main():
                 # Save the current goal distance to be used as a status input.
                 prev_goal_distance = predicted_distance
 
-            # TODO Move to the new position, from the next_position variable
+            # Sleep to get the desired framerate
+            # TODO Remove the inference time from this delay
+            time.sleep(1.0 / args.fps)
 
     # Clean up
     # TODO close the renderer
+    # Remove the window
+    cv2.destroyAllWindows()
 
     print("DNN control ending.")
 
