@@ -380,15 +380,20 @@ dl_tuple = LoopTuple(*([None] * len(decode_strs)))
 
 # TODO FIXME Deterministic shuffle only shuffles within a range. Should perhaps manipulate what is
 # in the tar file by shuffling filenames after the dataset is created.
+# TODO FIXME Yes, remove shuffling here, shuffle them outside of training. This will solve
+# speed issues, memory issues, and issues with sample correlation.
+# Decode directly to torch memory
+channels = 1
+image_decode_str = "torchl" if 1 == channels else "torchrgb"
 dataset = (
     #wds.WebDataset(args.dataset, shardshuffle=True)
     #.shuffle(20000//in_frames, initial=20000//in_frames)
     wds.WebDataset(args.dataset, shardshuffle=False)
-    .shuffle(20000//in_frames, initial=20000//in_frames)
+    #.shuffle(20000//in_frames, initial=20000//in_frames)
     # TODO This will hardcode all images to single channel numpy float images, but that isn't clear
     # from any documentation.
     # TODO Why "l" rather than decode to torch directly with "torchl"?
-    .decode("l")
+    .decode(image_decode_str)
     .to_tuple(*decode_strs)
 )
 
@@ -401,7 +406,7 @@ dataloader = torch.utils.data.DataLoader(dataset, num_workers=0, batch_size=batc
 if args.evaluate:
     eval_dataset = (
         wds.WebDataset(args.evaluate)
-        .decode("l")
+        .decode(image_decode_str)
         .to_tuple(*decode_strs)
     )
     eval_dataloader = torch.utils.data.DataLoader(eval_dataset, num_workers=0, batch_size=batch_size)
