@@ -4,12 +4,15 @@
 
 # The sequence of letters to move to
 #sequence: ['A', 'I', 'B', 'H']
-sequence: ['A', 'H', 'B', 'I']
-repeats: 10
+sequence: ['random', 'A', 'random', 'H', 'random', 'B', 'random', 'I']
+repeats: 50
 # 0.5cm stddev noise in the placement in all dimensions, z is offset by 3cm so the arm doesn't go too low.
 target_offsets: [0., 0., 0.03]
-target_noise: [0.005, 0.005, 0.005]
+target_noise: [0.0, 0.0, 0.0]
 #target_noise: [0.0, 0.0, 0.0]
 
 # Arm config
-arm_start: [0.15, 0.00, 0.05]
+arm_start: [0.25, 0.0, 0.03]
+r_range: [0.15, 0.35]
+t_range: [-0.15, 0.15]
+z_range: [0.02, 0.10]
