@@ -9,7 +9,7 @@ import math
 import torch
 import webdataset as wds
 
-from arm_utility import getDistance, interpretRTZPrediction, XYZToRThetaZ
+from arm_utility import getDistance, interpretRTZPrediction, RTZClassifierNames, XYZToRThetaZ
 from embedded_perturbation import generatePerturbedXYZ
 
 # Insert the bee analysis repository into the path so that the python modules of the git submodule
@@ -92,21 +92,28 @@ def main():
         relative_movement = False
         if "target_arm_position" in checkpoint['metadata']['labels']:
             nn_joint_slice = slice(labels.index('target_arm_position'), labels.index('target_arm_position')+5)
-            dnn_output_to_xyz = lambda out: computeGripperPosition(out[0,nn_joint_slice].tolist())
+            dnn_output_to_xyz = lambda out: computeGripperPosition(out[nn_joint_slice].tolist())
         elif "target_xyz_position" in checkpoint['metadata']['labels']:
-            dnn_output_to_xyz = lambda out: out[0].tolist()
+            dnn_output_to_xyz = lambda out: out.tolist()
         elif "target_rtz_position" in checkpoint['metadata']['labels']:
             rtz_slice = slice(labels.index('target_rtz_position'), labels.index('target_rtz_position')+3)
-            dnn_output_to_xyz = lambda out: RThetaZtoXYZ(*out[0,rtz_slice].tolist())
+            dnn_output_to_xyz = lambda out: RThetaZtoXYZ(*out[rtz_slice].tolist())
         elif "current_xyz_position" in checkpoint['metadata']['labels']:
-            dnn_output_to_xyz = lambda out: out[0].tolist()
+            dnn_output_to_xyz = lambda out: out.tolist()
         elif "rtz_classifier" in checkpoint['metadata']['labels']:
             # Interpreting this output is more complicated than the others since there are multiple
             # steps. We will just call a utility function from arm_utility
-            # TODO This was a training parameter, it should be pulled from the dataset
-            # Setting the threshold to 1cm here
-            threshold = 0.01
-            dnn_output_to_xyz = lambda x, y, z, out: RThetaZtoXYZ(*interpretRTZPrediction(*XYZToRThetaZ(x, y, z), threshold, out[0].tolist()))
+            rtz_classify_slice = slice(labels.index('rtz_classifier'), labels.index('rtz_classifier')+len(RTZClassifierNames()))
+            def processRTZClassifier(x, y, z, dnn_out):
+                # TODO This was a training parameter, it should be pulled from the dataset
+                # Setting the threshold to 1cm here
+                threshold = 0.01
+                cur_rtz = XYZToRThetaZ(x, y, z)
+                next_rtz = interpretRTZPrediction(*cur_rtz, threshold, dnn_out[rtz_classify_slice].tolist())
+                return RThetaZtoXYZ(*next_rtz)
+
+            dnn_output_to_xyz = processRTZClassifier
+            # Indicate that movement is relative to the current position
             relative_movement = True
 
         # The current arm position must be decoded so that it can be in the output data.
@@ -118,6 +125,9 @@ def main():
             decode_strs.append('target_arm_position')
         if 'target_xyz_position' not in decode_strs:
             decode_strs.append('target_xyz_position')
+
+        # For easy of debugging
+        decode_strs.append('metadata_cur_frame')
 
         # Decode directly to torch memory
         channels = 1
@@ -203,20 +213,21 @@ def main():
                 else:
                     output = net(image)
 
-            if i < 32:
-                from torchvision import transforms
-                with torch.no_grad():
-                    print("input {} vector inputs {}".format(i, vector_inputs))
-                    img = transforms.ToPILImage()(image[0][0]).convert('L')
-                    img.save("cat_img_{}.png".format(i, 0))
+            # For debugging
+            #if i < 32:
+            #    from torchvision import transforms
+            #    with torch.no_grad():
+            #        print("input {} vector inputs {}".format(i, vector_inputs))
+            #        img = transforms.ToPILImage()(image[0][0]).convert('L')
+            #        img.save("cat_img_{}.png".format(i, 0))
 
             if denormalizer is not None:
                 output = denormalizer(output)
-            # Onl
+            # Only provide the current location if this is a relative predictor
             if not relative_movement:
-                dnn_xyz = dnn_output_to_xyz(output)
+                dnn_xyz = dnn_output_to_xyz(output[0])
             else:
-                dnn_xyz = dnn_output_to_xyz(*current_xyz, output)
+                dnn_xyz = dnn_output_to_xyz(*current_xyz, output[0])
             # Add the DNN predictions to the output line
             if "target_arm_position" in checkpoint['metadata']['labels']:
                 dnn_joint_positions = output[0].tolist()
