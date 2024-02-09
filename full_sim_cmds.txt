@@ -1,0 +1,78 @@
+#! /usr/bin/bash
+
+# Datasets and dataprep
+prefix="test_synthetic"
+prefix="test_synthetic_45"
+
+dataset="$prefix"
+dataprep_args="--shuffle --arm_calibration configs/synth_calibration.yaml --video_prefix sim_video --crop_x_offset -200 --video_scale 0.5 --width 400 --height 280 --sample_prob 0.25 --crop_noise 0 --prediction_distance 0.01 --yaml_records records.yaml"
+train_archive="$prefix.tar"
+
+# Relative RTZ model training
+#train_args="--labels rtz_classifier --loss_fun BCEWithLogitsLoss --modeltype bennet --epochs 30 --batch_size 64 --vector_inputs current_rtz_position"
+#modelname="sim_models/20240118_test_synthetic.pyt"
+#train_args="--labels rtz_classifier goal_distance --normalize --normalize_status\
+#           --loss_fun BCEWithLogitsLoss --modeltype bennet \
+#           --vector_inputs goal_mark current_rtz_position \
+#           --lr 0.0001 --epochs 20 --batch_size 64"
+train_args="--labels rtz_classifier goal_distance --normalize --normalize_status\
+           --loss_fun L1Loss --modeltype bennet \
+           --vector_inputs goal_mark current_rtz_position \
+           --lr 0.0001 --epochs 20 --batch_size 64"
+# Target RTZ
+#train_args="--labels target_rtz_position goal_distance --normalize --normalize_status --loss_fun MSELoss --modeltype bennet --vector_inputs goal_mark --lr 0.001 --epochs 20 --batch_size 64"
+
+modelname="sim_models/20240118_test_synthetic.pyt"
+
+do_datagen=false
+do_dataprep=false
+do_shuffle=false
+do_training=true
+cat_results=false
+pert_training=false
+
+# The default camera view is straight down
+cam_bases="0.  0.  -1.  -1.  0.  0.  0.  1.  0."
+cam_coords="-0.5  -0.35  0.0"
+# 45 degree view
+cam_bases="0.0 0.7071067811865475 -0.7071067811865475 -1.0  0.0  0.0  0.0  0.7071067811865475 0.7071067811865475"
+cam_coords="-0.5  -0.35  0.0"
+
+if [[ $do_datagen == true ]]; then
+    echo "Doing datageneration."
+    #python3 letter_touch_sim.py 30 $prefix configs/letter_config.yaml configs/action_config.yaml
+    python3 letter_touch_sim.py --camera_bases $cam_bases --camera_coordinates $cam_coords 30 $prefix configs/letter_config.yaml configs/action_config.yaml
+fi
+
+if [[ $do_dataprep == true ]]; then
+    echo "Dataprep square dataset."
+    python3 dataprep.py $dataprep_args $train_archive $dataset
+fi
+
+if [[ $do_shuffle == true ]]; then
+    echo "Shuffling dataset."
+    bash shuffle_webdataset.sh test_synthetic_45.tar
+fi
+
+if [[ $do_training == true ]]; then
+    echo "Train model"
+    # Remove any old worst example to avoid confusion
+    rm -f ${modelname%%.pyt}-worstN-train/*.png
+    python3 train_robot_arm.py $train_archive --outname $modelname $train_args --save_worst_n 50 --save_top_n 50 > train_log_synthetic.txt
+fi
+
+#echo "Worst examples"
+#python3 train_robot_arm.py $archive --resume_from $modelname --outname models/20231010_square_bennet_1cm_path_distance_no_current_input_large-2.pyt --labels target_arm_position --loss_fun MSELoss --modeltype bennet --epochs 1 --save_worst_n 50 --save_top_n 50
+
+if [[ $cat_results == true ]]; then
+    echo "Cat model results"
+    python3 cat_dataset_statistics.py $train_archive --model $modelname --save_images 50 > ${train_archive%%.tar}_results.csv
+    mv dataset_images.png synthetic_dataset_images.png
+    # Plot with something like this:
+    # splot '20231010_sq_bennet_1cm_no_status_locations_joints.txt' u 3:4:5:($6-$3):($7-$4):($8-$5) w vectors t "Correct 1cm movement", '' u 3:4:5:($19-$3):($20-$4):($21-$5) w vectors t "DNN 1cm movement"
+fi
+
+#python3 inference_arm.py --crop_x_offset 140 --video_scale 0.5 --width 400 --height 280 --cps 3 --goal_sequence 0 --out_channels 1 --dnn_outputs target_arm_position --modeltype bennet --model_checkpoint $modelname
+
+echo "Test with:"
+echo python3 inference_sim.py --camera_bases $cam_bases --camera_coordinates $cam_coords --video_scale 0.5 --crop_x_offset -200 --model_checkpoint $modelname 30 configs/letter_config.yaml configs/action_config.yaml
