@@ -26,6 +26,8 @@ import sim_utility
 def xyzToSolvedPosition(xyz_positions, hand_length):
     rtz = XYZToRThetaZ(*xyz_positions)
     middle_joints = rSolver(rtz[0], rtz[2], segment_lengths=[0.104, 0.158, 0.147, hand_length])
+    if False == middle_joints[0]:
+        return None
     solved_position = [
         # Waist
         rtz[1],
@@ -195,7 +197,12 @@ def main():
 
     # Get the target position, with noise and offsets as configured
     target_letter = actions['sequence'][sequence_position]
-    target_position = pointPlusNoise(letter_centers[target_letter], actions['target_offsets'], actions['target_noise'])
+    if "random" != target_letter:
+        target_position = pointPlusNoise(letter_centers[target_letter], actions['target_offsets'], actions['target_noise'])
+    else:
+        # If the target is random then pick an arbitrary point within the allowed range.
+        target_position = [random.uniform(*actions['r_range']),
+            random.uniform(*actions['t_range']), random.uniform(*actions['z_range'])]
 
     while sequence_completions < actions['repeats']:
         # Move from cur_position towards the target position
@@ -212,7 +219,12 @@ def main():
 
             # Set the next target position, with random noise
             target_letter = actions['sequence'][sequence_position]
-            target_position = pointPlusNoise(letter_centers[target_letter], actions['target_offsets'], actions['target_noise'])
+            if "random" != target_letter:
+                target_position = pointPlusNoise(letter_centers[target_letter], actions['target_offsets'], actions['target_noise'])
+            else:
+                # If the target is random then pick an arbitrary point within the allowed range.
+                target_position = [random.uniform(*actions['r_range']),
+                    random.uniform(*actions['t_range']), random.uniform(*actions['z_range'])]
             labels['mark'].append(None)
         elif distance_remaining <= speed_per_frame:
             # Move to the target position
@@ -228,6 +240,9 @@ def main():
             total_distance += speed_per_frame
 
         joint_positions = xyzToSolvedPosition(xyz_positions=cur_position, hand_length=args.hand_length)
+        if joint_positions is None:
+            print("Position {} cannot be reached. Aborting.".format(cur_position))
+            return
 
         # Render the joint positions and timestamps
         renderer.writeFrame(joint_positions)
