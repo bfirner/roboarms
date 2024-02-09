@@ -98,8 +98,14 @@ parser.add_argument(
     required=False,
     default=False,
     action="store_true",
-    help=("Normalize inputs: input = (input - mean) / stddev. "
+    help=("Normalize image inputs: input = (input - mean) / stddev. "
         "Note that VidActRecDataprep is already normalizing so this may not be required."))
+parser.add_argument(
+    '--normalize_status',
+    required=False,
+    default=False,
+    action="store_true",
+    help=("Normalize status inputs by adjusting DNN weight and bias values (only works with some models)."))
 parser.add_argument(
     '--normalize_outputs',
     required=False,
@@ -317,7 +323,7 @@ else:
         wds.WebDataset(args.dataset)
         .to_tuple(*label_decode_strs)
     )
-    # TODO Loop through the dataset and compile label statistics
+    # Loop through the dataset and compile label statistics
     label_dataloader = torch.utils.data.DataLoader(label_dataset, num_workers=0, batch_size=1)
     for data in label_dataloader:
         for label, stat in zip(extractVectors(data, slice(0, label_size))[0].tolist(), label_stats):
@@ -352,7 +358,6 @@ label_handler = LabelHandler(label_size=label_size, label_range=label_range, lab
 if normalizer is not None:
     label_handler.setPreprocess(lambda labels: normalizer(labels))
 
-
 # Network outputs may need to be postprocessed for evaluation if some postprocessing is being done
 # automatically by the loss function.
 # Use an identify function unless normalization is being used.
@@ -383,13 +388,14 @@ dl_tuple = LoopTuple(*([None] * len(decode_strs)))
 # TODO FIXME Yes, remove shuffling here, shuffle them outside of training. This will solve
 # speed issues, memory issues, and issues with sample correlation.
 # Decode directly to torch memory
+# TODO Use use .map_tuple to preprocess samples during the dataloading
 channels = 1
 image_decode_str = "torchl" if 1 == channels else "torchrgb"
 dataset = (
     #wds.WebDataset(args.dataset, shardshuffle=True)
     #.shuffle(20000//in_frames, initial=20000//in_frames)
     wds.WebDataset(args.dataset, shardshuffle=False)
-    #.shuffle(20000//in_frames, initial=20000//in_frames)
+    .shuffle(1000//in_frames, initial=1000//in_frames)
     # TODO This will hardcode all images to single channel numpy float images, but that isn't clear
     # from any documentation.
     # TODO Why "l" rather than decode to torch directly with "torchl"?
@@ -522,6 +528,35 @@ elif 'convnextb' == args.modeltype:
     optimizer = torch.optim.SGD(net.parameters(), lr=lr, weight_decay=10e-4, momentum=0.9)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[2,5,12], gamma=0.2)
 print(f"Model is {net}")
+
+# Normalize status vector input by adjust the weight and bias in the linear layer.
+# Not all networks support this feature and there is no reason to normalize if the weights and bias
+# values will be restored from a checkpoint.
+if args.normalize_status and not args.resume_from:
+    print("Reading the dataset to compute vector input statistics for normalization.")
+    vector_stats = [OnlineStatistics() for _ in range(vector_input_size)]
+    vector_dataset = (
+        wds.WebDataset(args.dataset)
+        .to_tuple(*vector_decode_strs)
+    )
+    # TODO Loop through the dataset and compile vector inputs statistics
+    vector_dataloader = torch.utils.data.DataLoader(vector_dataset, num_workers=0, batch_size=1)
+    for data in vector_dataloader:
+        for vector, stat in zip(extractVectors(data, slice(0, vector_input_size))[0].tolist(), vector_stats):
+            stat.sample(vector)
+    # Now record the statistics
+    vector_means = []
+    vector_stddevs = []
+    for stat in vector_stats:
+        vector_means.append(stat.mean())
+        vector_stddevs.append(math.sqrt(stat.variance()))
+
+    print("Normalizing status vector inputs with means {} and stddevs {}".format(vector_means, vector_stddevs))
+
+    if hasattr(net, "normalizeVectorInputs") and callable(getattr(net, "normalizeVectorInputs")):
+        net.normalizeVectorInputs(vector_means, vector_stddevs)
+else:
+    print("normalize_status set to true, but chosen model architecture {} does not support that feature.".format(args.modeltype))
 
 if warmup_epoch:
     for group in optimizer.param_groups:
