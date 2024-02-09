@@ -19,8 +19,7 @@ from threading import Event
 
 # Includes from this project
 import sim_utility
-from arm_utility import (computeGripperPosition, interpretRTZPrediction, rSolver, XYZToRThetaZ)
-
+from arm_utility import (computeGripperPosition, interpretRTZPrediction, rSolver, RTZClassifierNames, XYZToRThetaZ)
 
 # Insert the bee analysis repository into the path so that the python modules of the git submodule
 # can be used properly.
@@ -214,25 +213,10 @@ def main():
     patch_height = checkpoint['metadata']['model_args']['in_dimensions'][1]
     patch_width = checkpoint['metadata']['model_args']['in_dimensions'][2]
 
-    # Find the size of the model image inputs, vector inputs, and outputs
-    vector_input_size = 0
-    for input_name in vector_names:
-        # Vector inputs are size 1 unless they are the current robot position
-        if input_name == 'current_arm_position':
-            vector_input_size += num_arm_joints
-        else:
-            vector_input_size += 1
-
-    dnn_output_size = 0
-    for output_name in dnn_outputs:
-        # Outputs are size 1 unless they are the predicted robot position
-        if output_name == 'target_arm_position':
-            dnn_output_size += num_arm_joints
-        else:
-            dnn_output_size += 1
-
     # Initialize the vector inputs tensor
     goal_idx = 0
+    while "random" == actions['sequence'][goal_idx]:
+        goal_idx = (goal_idx + 1) % len(actions['sequence'])
     vector_input_locations = {}
     vector_size = 0
     # History goal distance is initialized to 10cm
@@ -278,7 +262,7 @@ def main():
             output_locations[output_name] = slice(out_idx, out_idx+3)
             out_idx += 3
         elif output_name == 'rtz_classifier':
-            rtz_classifier_size = 10
+            rtz_classifier_size = len(RTZClassifierNames())
             output_locations[output_name] = slice(out_idx, out_idx+rtz_classifier_size)
             out_idx += rtz_classifier_size
         else:
@@ -316,10 +300,6 @@ def main():
     cur_position = actions['arm_start']
     total_frames = 0
     sequence_completions = 0
-
-    # Get the target position, with noise and offsets as configured
-    target_letter = actions['sequence'][goal_idx]
-    gt_target_position = letter_centers[target_letter]
 
     # TODO This was a training parameter, it should be pulled from the dataset
     # Setting the threshold to 1cm here
@@ -370,19 +350,21 @@ def main():
                 v, m = torch.var_mean(new_frame)
                 new_frame = (new_frame - m) / v
 
-            print("Frame min and max are {} and {}".format(new_frame[0].min(), new_frame[0].max()))
-            cv2.imwrite("frame_{}.png".format(total_frames), (255*(0.5+new_frame[0])).clamp(min=0., max=255.).cpu().view(280, 400, 1).numpy())
+            # For debugging
+            #print("Frame min and max are {} and {}".format(new_frame[0].min(), new_frame[0].max()))
+            #cv2.imwrite("frame_{}.png".format(total_frames), (255*(0.5+new_frame[0])).clamp(min=0., max=255.).cpu().view(280, 400, 1).numpy())
 
             # Fill in vector inputs
             for input_name in vector_names:
                 # Vector inputs are size 1 unless they are the current robot position
                 outslice = vector_input_locations[input_name]
                 if input_name == 'current_position':
-                    vector_input_buffer[0, outslice].copy_(torch.tensor(joint_positions))
+                    vector_input_buffer[0, outslice].copy_(torch.tensor(cur_joints))
                 elif input_name == 'current_arm_position':
-                    vector_input_buffer[0, outslice].copy_(torch.tensor(joint_positions))
+                    vector_input_buffer[0, outslice].copy_(torch.tensor(cur_joints))
                 elif input_name == 'current_rtz_position':
-                    current_rtz_position = XYZToRThetaZ(*computeGripperPosition(joint_positions, segment_lengths))
+                    print("Cur joints are {}".format(cur_joints))
+                    current_rtz_position = XYZToRThetaZ(*computeGripperPosition(cur_joints, segment_lengths))
                     print("Writing location {} into slice {}".format(current_rtz_position, outslice))
                     vector_input_buffer[0, outslice].copy_(torch.tensor(current_rtz_position))
                 elif input_name == 'goal_mark':
@@ -403,6 +385,7 @@ def main():
             else:
                 # Expand a batch dimension and forward
                 net_out = net(new_frame.expand(1, -1, -1, -1), vector_input_buffer)
+                print("Vector inputs at are {}".format(vector_input_buffer))
             if denormalizer is not None:
                 net_out = denormalizer(net_out)
             predicted_distance = 1.0
@@ -430,9 +413,11 @@ def main():
                 ]
                 print("joints updating to {}".format(cur_joints))
             elif 'rtz_classifier' in output_locations:
-                current_xyz = computeGripperPosition(joint_positions)
+                current_xyz = computeGripperPosition(cur_joints, segment_lengths)
+                print("Network raw prediction: {}".format(net_out))
                 predictions = net_out[0, output_locations['rtz_classifier']].tolist()
                 next_rtz_position = interpretRTZPrediction(*XYZToRThetaZ(*current_xyz), touch_threshold, predictions)
+                print("Network predicted rtz: {}".format(next_rtz_position))
                 # Solve for the joint positions
                 middle_joints = rSolver(next_rtz_position[0], next_rtz_position[2], segment_lengths)
                 cur_joints = [
@@ -452,8 +437,10 @@ def main():
 
             # TODO The threshold shouldn't be a magic variable
             if predicted_distance < 0.01:
-                goal_idx = (goal_idx + 1) % len(actions.sequence)
-                print("Switching to goal {}".format(actions.sequence[goal_idx]))
+                goal_idx = (goal_idx + 1) % len(actions['sequence'])
+                while "random" == actions['sequence'][goal_idx]:
+                    goal_idx = (goal_idx + 1) % len(actions['sequence'])
+                print("Switching to goal {}".format(actions['sequence'][goal_idx]))
                 # History goal distance is initialized to 10cm
                 prev_goal_distance = 0.1
             else:
