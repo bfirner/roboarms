@@ -195,6 +195,12 @@ def main():
         default=None,
         type=str,
         help='If set, read records from a yaml file rather than using messages from a rosbag.')
+    parser.add_argument(
+        '--shuffle',
+        required=False,
+        default=False,
+        action='store_true',
+        help='Shuffle the order of data inside of the webdataset (by prefixing a random uuid).')
 
     args = parser.parse_args()
 
@@ -415,8 +421,8 @@ def main():
                     same_location = sample_labels["current_xyz_position"] == sample_labels["target_xyz_position"]
 
                     # We cannot use this sample if there is no goal for the current motion
-                    # Only accept goals in our training list
-                    goals_satisfied = (0 == len(args.goals)) or (next_mark is not None and next_mark in args.goals)
+                    # Only accept goals in our training list and we never use the random goal.
+                    goals_satisfied = 'random' != next_mark and ((0 == len(args.goals)) or (next_mark is not None and next_mark in args.goals))
                     if not same_location and goals_satisfied:
                         cur_pos = sample_labels["current_xyz_position"]
                         if next_mark is not None:
@@ -459,8 +465,16 @@ def main():
                         sample_labels['metadata_cur_frame_time'] = video_timestamps[current_frame]
                         sample_labels['metadata_next_frame_time'] = video_timestamps[next_frame]
 
-                        # Now write the sample labels and frames.
-                        writeSample(datawriter, sample_labels, sample_frames, rosdir.replace('/', ''),
+                        # Now write the sample labels and frames. Append a random uuid if the read
+                        # order should be shuffled.
+                        prefix = rosdir.replace('/', '')
+                        if args.shuffle:
+                            # TODO Find a way to actually shuffle. May need to buffer before
+                            # writing, or write into multiple tar files and then use sharded
+                            # dataloading.
+                            pass
+
+                        writeSample(datawriter, sample_labels, sample_frames, prefix,
                             frame_nums)
                         # Keep the user updated on dataset progress
                         frames_sampled += 1
