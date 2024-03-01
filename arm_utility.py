@@ -6,11 +6,6 @@ import math
 import torch
 import yaml
 
-# Ros includes
-import rclpy
-from sensor_msgs.msg import JointState
-
-from interbotix_common_modules.angle_manipulation import angle_manipulation as ang
 from interbotix_xs_modules.xs_robot.arm import InterbotixManipulatorXS
 
 
@@ -280,6 +275,26 @@ def interpretRTZPrediction(r, theta, z, threshold, prediction):
 
     return [out_r, out_theta, out_z]
 
+def rtzDiffToClassifier(current_rtz_position, target_rtz_position, prediction_distance):
+    return [1 if value else 0 for value in [
+        # Current position r is more than the movement threshold less than the target r
+        0.25 * prediction_distance < target_rtz_position[0] - current_rtz_position[0],
+        # Current position r is more than the movement threshold greater than the target r
+        0.25 * prediction_distance < current_rtz_position[0] - target_rtz_position[0],
+        # Current position z is more than the movement threshold less than the target z
+        0.25 * prediction_distance < target_rtz_position[2] - current_rtz_position[2],
+        # Current position z is more than the movement threshold greater than the target z
+        0.25 * prediction_distance < current_rtz_position[2] - target_rtz_position[2],
+        # Current position theta is more than the given threshold less than the target theta
+        math.pi/30. < target_rtz_position[1] - current_rtz_position[1],
+        math.pi/100. < target_rtz_position[1] - current_rtz_position[1],
+        math.pi/300. < target_rtz_position[1] - current_rtz_position[1],
+        # Current position theta is more than the given threshold greater than the target theta
+        math.pi/30. < current_rtz_position[1] - target_rtz_position[1],
+        math.pi/100. < current_rtz_position[1] - target_rtz_position[1],
+        math.pi/300. < current_rtz_position[1] - target_rtz_position[1],
+    ]]
+
 def getWaistCoords(theta0, segment_G):
     waist_x = 0.
     waist_y = 0.
@@ -513,9 +528,11 @@ def getCalibrationDiff(manip_yaml, puppet_yaml) -> dict:
 
     return corrections
 
-
 class ArmReplay(InterbotixManipulatorXS):
     # This class has a core type through which we will access robot data.
+    # Ros includes
+    import rclpy
+    from sensor_msgs.msg import JointState
 
     waist_step = 0.06
     rotate_step = 0.04
@@ -626,51 +643,51 @@ class ArmReplay(InterbotixManipulatorXS):
             moving_time=delay, blocking=False)
         print("Movement success: {}".format(succ))
 
-#    def _check_joint_limits(self, positions: List[float]) -> bool:
-#        """
-#        Ensure the desired arm group's joint positions are within their limits.
-#
-#        :param positions: the positions [rad] to check
-#        :return: `True` if all positions are within limits; `False` otherwise
-#        """
-#        self.core.get_logger().debug(f'Checking joint limits for {positions=}')
-#        theta_list = [int(elem * 1000) / 1000.0 for elem in positions]
-#        speed_list = [
-#            abs(goal - current) / float(self.moving_time)
-#            for goal, current in zip(theta_list, self.joint_commands)
-#        ]
-#        # check position and velocity limits
-#        for x in range(self.group_info.num_joints):
-#            if not (
-#                self.group_info.joint_lower_limits[x]
-#                <= theta_list[x]
-#                <= self.group_info.joint_upper_limits[x]
-#            ):
-#                return False
-#            if speed_list[x] > self.group_info.joint_velocity_limits[x]:
-#                return False
-#        return True
-#
-#    def _check_single_joint_limit(self, joint_name: str, position: float) -> bool:
-#        """
-#        Ensure a desired position for a given joint is within its limits.
-#
-#        :param joint_name: desired joint name
-#        :param position: desired joint position [rad]
-#        :return: `True` if within limits; `False` otherwise
-#        """
-#        self.core.get_logger().debug(
-#            f'Checking joint {joint_name} limits for {position=}'
-#        )
-#        theta = int(position * 1000) / 1000.0
-#        speed = abs(
-#            theta - self.joint_commands[self.info_index_map[joint_name]]
-#        ) / float(self.moving_time)
-#        ll = self.group_info.joint_lower_limits[self.info_index_map[joint_name]]
-#        ul = self.group_info.joint_upper_limits[self.info_index_map[joint_name]]
-#        vl = self.group_info.joint_velocity_limits[self.info_index_map[joint_name]]
-#        if not (ll <= theta <= ul):
-#            return False
-#        if speed > vl:
-#            return False
-#        return True
+    def _check_joint_limits(self, positions: List[float]) -> bool:
+        """
+        Ensure the desired arm group's joint positions are within their limits.
+
+        :param positions: the positions [rad] to check
+        :return: `True` if all positions are within limits; `False` otherwise
+        """
+        self.core.get_logger().debug(f'Checking joint limits for {positions=}')
+        theta_list = [int(elem * 1000) / 1000.0 for elem in positions]
+        speed_list = [
+            abs(goal - current) / float(self.moving_time)
+            for goal, current in zip(theta_list, self.joint_commands)
+        ]
+        # check position and velocity limits
+        for x in range(self.group_info.num_joints):
+            if not (
+                self.group_info.joint_lower_limits[x]
+                <= theta_list[x]
+                <= self.group_info.joint_upper_limits[x]
+            ):
+                return False
+            if speed_list[x] > self.group_info.joint_velocity_limits[x]:
+                return False
+        return True
+
+    def _check_single_joint_limit(self, joint_name: str, position: float) -> bool:
+        """
+        Ensure a desired position for a given joint is within its limits.
+
+        :param joint_name: desired joint name
+        :param position: desired joint position [rad]
+        :return: `True` if within limits; `False` otherwise
+        """
+        self.core.get_logger().debug(
+            f'Checking joint {joint_name} limits for {position=}'
+        )
+        theta = int(position * 1000) / 1000.0
+        speed = abs(
+            theta - self.joint_commands[self.info_index_map[joint_name]]
+        ) / float(self.moving_time)
+        ll = self.group_info.joint_lower_limits[self.info_index_map[joint_name]]
+        ul = self.group_info.joint_upper_limits[self.info_index_map[joint_name]]
+        vl = self.group_info.joint_velocity_limits[self.info_index_map[joint_name]]
+        if not (ll <= theta <= ul):
+            return False
+        if speed > vl:
+            return False
+        return True

@@ -6,7 +6,6 @@
 
 import argparse
 import csv
-import ffmpeg
 import io
 import itertools
 import math
@@ -20,8 +19,8 @@ import torch
 import webdataset as wds
 import yaml
 
-from arm_utility import (getDistance, computeGripperPosition, getCalibratedJoints,
-        getStateAtNextPosition, XYZToRThetaZ)
+from arm_utility import (getDistance, computeGripperPosition, rtzDiffToClassifier,
+    getCalibratedJoints, getStateAtNextPosition, XYZToRThetaZ)
 from data_utility import (ArmDataInterpolator, readArmRecords, readLabels, readVideoTimestamps)
 from bee_analysis.utility.video_utility import (getVideoInfo, VideoSampler)
 # These are the robot descriptions to match function calls in the modern robotics package.
@@ -51,7 +50,6 @@ def writeSample(dataset, sample_labels, frames, video_source, frame_nums):
         buf = io.BytesIO()
         img.save(fp=buf, format="png")
         buffers.append(buf)
-    # TODO FIXME Need to fetch the robot state for this
     base_name = '_'.join([video_source] + [str(fnum) for fnum in frame_nums])
     sample = {
         "__key__": base_name,
@@ -68,7 +66,7 @@ def main():
     parser.add_argument(
         'outpath',
         type=str,
-        help='Output path for the WebDataset.')
+        help='Output path for the WebDataset file.')
     parser.add_argument(
         'bag_paths',
         nargs='+',
@@ -142,7 +140,7 @@ def main():
         '--sample_prob',
         type=float,
         required=False,
-        default=0.2,
+        default=0.5,
         help='Probability of sampling any frame.')
     parser.add_argument(
         '--out_channels',
@@ -178,7 +176,7 @@ def main():
         default="px150",
         help='The name of the interbotix robot model.')
     parser.add_argument(
-        '--nonormalize',
+        '--normalize',
         required=False,
         default=False,
         action='store_true',
@@ -297,7 +295,7 @@ def main():
         sampler = VideoSampler(vid_path, num_samples, args.frames_per_sample, args.interval,
             out_width=args.width, out_height=args.height, crop_noise=args.crop_noise,
             scale=args.video_scale, crop_x_offset=args.crop_x_offset,
-            crop_y_offset=args.crop_y_offset, channels=3, normalize=(not args.nonormalize))
+            crop_y_offset=args.crop_y_offset, channels=3, normalize=(args.normalize))
 
         frames_sampled = 0
         for frame_data in sampler:
@@ -367,9 +365,10 @@ def main():
                         # Expand the full list of joint positions to the arm position and gripper
                         # position
                         if key == 'position':
-                            sample_labels["target_arm_position"] = getCalibratedJoints(next_state, ordered_joint_names, calibration)
-                            sample_labels["target_xyz_position"] = list(computeGripperPosition(sample_labels['target_arm_position']))
-                            sample_labels["target_rtz_position"] = XYZToRThetaZ(*sample_labels["target_xyz_position"])
+                            joints = getCalibratedJoints(next_state, ordered_joint_names, calibration)
+                            sample_labels["target_arm_position"] = torch.tensor(joints)
+                            sample_labels["target_xyz_position"] = torch.tensor(computeGripperPosition(joints))
+                            sample_labels["target_rtz_position"] = torch.tensor(XYZToRThetaZ(*computeGripperPosition(joints)))
 
                     for key, value in current_data.items():
                         sample_labels["current_{}".format(key)] = value
@@ -378,31 +377,16 @@ def main():
                         # TODO This assumes a joint setup as in the Interbotix px150 where the first
                         # five joints are the arm
                         if key == 'position':
-                            sample_labels["current_arm_position"] = getCalibratedJoints(current_data, ordered_joint_names, calibration)
-                            sample_labels["current_xyz_position"] = list(computeGripperPosition(sample_labels['current_arm_position']))
-                            sample_labels["current_rtz_position"] = XYZToRThetaZ(*sample_labels["current_xyz_position"])
+                            joints = getCalibratedJoints(current_data, ordered_joint_names, calibration)
+                            sample_labels["current_arm_position"] = torch.tensor(joints)
+                            sample_labels["current_xyz_position"] = torch.tensor(computeGripperPosition(joints))
+                            sample_labels["current_rtz_position"] = torch.tensor(XYZToRThetaZ(*computeGripperPosition(joints)))
 
                     # Relative movements must be for a value less than the args.prediction_distance
                     # TODO FIXME We are just going to use 0.25 * args.prediction_distance for r and z.
                     # Theta will get several flat values: math.pi/10, math.pi/30, math.pi/100
-                    sample_labels["rtz_classifier"] = [1 if value else 0 for value in [
-                        # Current position r is more than the movement threshold less than the target r
-                        0.25 * args.prediction_distance < sample_labels["target_rtz_position"][0] - sample_labels["current_rtz_position"][0],
-                        # Current position r is more than the movement threshold greater than the target r
-                        0.25 * args.prediction_distance < sample_labels["current_rtz_position"][0] - sample_labels["target_rtz_position"][0],
-                        # Current position z is more than the movement threshold less than the target z
-                        0.25 * args.prediction_distance < sample_labels["target_rtz_position"][2] - sample_labels["current_rtz_position"][2],
-                        # Current position z is more than the movement threshold greater than the target z
-                        0.25 * args.prediction_distance < sample_labels["current_rtz_position"][2] - sample_labels["target_rtz_position"][2],
-                        # Current position theta is more than the given threshold less than the target theta
-                        math.pi/30. < sample_labels["target_rtz_position"][1] - sample_labels["current_rtz_position"][1],
-                        math.pi/100. < sample_labels["target_rtz_position"][1] - sample_labels["current_rtz_position"][1],
-                        math.pi/300. < sample_labels["target_rtz_position"][1] - sample_labels["current_rtz_position"][1],
-                        # Current position theta is more than the given threshold greater than the target theta
-                        math.pi/30. < sample_labels["current_rtz_position"][1] - sample_labels["target_rtz_position"][1],
-                        math.pi/100. < sample_labels["current_rtz_position"][1] - sample_labels["target_rtz_position"][1],
-                        math.pi/300. < sample_labels["current_rtz_position"][1] - sample_labels["target_rtz_position"][1],
-                    ]]
+                    sample_labels["rtz_classifier"] = torch.tensor(
+                        rtzDiffToClassifier(sample_labels["current_rtz_position"].tolist(), sample_labels["target_rtz_position"].tolist(), args.prediction_distance))
 
                     # Find the mark that we are progressing towards from this frame.
                     future_marks = labels['mark'][(int(frame_nums[-1])):]
@@ -416,6 +400,7 @@ def main():
 
                     # This is the mark of the initial state for this maneuver
                     sample_labels["initial_mark"] = marks[(int(frame_nums[-1]))]
+                    # TODO FIXME sample_labels["target_mark_xyz_location"] = TODO
 
                     # If the next state is at the same location as the current state then don't use it
                     same_location = sample_labels["current_xyz_position"] == sample_labels["target_xyz_position"]
@@ -423,7 +408,7 @@ def main():
                     # We cannot use this sample if there is no goal for the current motion
                     # Only accept goals in our training list and we never use the random goal.
                     goals_satisfied = 'random' != next_mark and ((0 == len(args.goals)) or (next_mark is not None and next_mark in args.goals))
-                    if not same_location and goals_satisfied:
+                    if not same_location.all() and goals_satisfied:
                         cur_pos = sample_labels["current_xyz_position"]
                         if next_mark is not None:
                             # The goal mark is the one currently being moved towards
