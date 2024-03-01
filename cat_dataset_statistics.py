@@ -18,8 +18,9 @@ import sys
 sys.path.append('bee_analysis')
 
 from arm_utility import computeGripperPosition, RThetaZtoXYZ
-from bee_analysis.utility.dataset_utility import decodeUTF8Strings
+from bee_analysis.utility.dataset_utility import (extractVectors, extractUnflatVectors, makeDataset)
 from bee_analysis.utility.model_utility import (createModel2, hasNormalizers, restoreModel, restoreNormalizers)
+from bee_analysis.utility.train_utility import (createPositionMask)
 
 
 def main():
@@ -63,10 +64,8 @@ def main():
 
     if args.model is None:
         decode_strs = ["current_arm_position", "target_arm_position", "current_xyz_position", "target_xyz_position"]
-        label_dataset = (
-            wds.WebDataset(args.dataset)
-            .to_tuple(*decode_strs)
-        )
+
+        label_dataset = makeDataset(args.dataset, decode_strs)
     else:
         # Check if there is model stuff to do
         checkpoint = torch.load(args.model)
@@ -132,11 +131,8 @@ def main():
         # Decode directly to torch memory
         channels = 1
         image_decode_str = "torchl" if 1 == channels else "torchrgb"
-        label_dataset = (
-            wds.WebDataset(args.dataset)
-            .decode(image_decode_str)
-            .to_tuple(*decode_strs)
-        )
+        # TODO The makeDataset always assumes "torchl" for the image decoding string.
+        label_dataset = makeDataset(args.dataset, decode_strs)
 
 
     # Loop through the dataset and compile label statistics
@@ -144,13 +140,15 @@ def main():
 
     # Set the proper index values to use for the joint positions
     if args.model is None:
-        cur_idx = 0
-        tar_idx = 1
+        cur_idx = decode_strs.index("current_arm_position")
+        tar_idx = decode_strs.index("target_arm_position")
+        cur_xyz_idx = decode_strs.index("current_xyz_position")
+        tar_xyz_idx = decode_strs.index("target_xyz_position")
     else:
         cur_idx = decode_strs.index("current_arm_position") - 1
         tar_idx = decode_strs.index("target_arm_position") - 1
-    cur_xyz_idx = decode_strs.index("current_xyz_position") - 1
-    tar_xyz_idx = decode_strs.index("target_xyz_position") - 1
+        cur_xyz_idx = decode_strs.index("current_xyz_position") - 1
+        tar_xyz_idx = decode_strs.index("target_xyz_position") - 1
 
     # Used if we are saving images
     if 0 < args.save_images:
@@ -173,19 +171,21 @@ def main():
         # TODO Does the header need a number for every feature?
     print(header)
 
+    position_mask = None
+
     for i, data in enumerate(label_dataloader):
         # We don't use the image unless it is being saved or forwarded through a network
         if i < args.save_images or args.model is not None:
             image = data[0].unsqueeze(1).cuda()
-        if args.model is None:
-            tensor_data = decodeUTF8Strings(data)
-            vector_inputs = None
+
+        vector_offset = 0 if args.model is None else 1
+        tensor_data = extractUnflatVectors(data, slice(vector_offset, len(data)))
+
+        # Create a vector input with a batch dimension
+        if args.model is not None and 0 < len(vector_names):
+            vector_inputs = extractVectors(data, slice(vector_offset, vector_offset+len(vector_names)))
         else:
-            tensor_data = decodeUTF8Strings(data[1:])
-            if 0 < len(vector_names):
-                vector_inputs = torch.cat(tensor_data[0:len(vector_names)], 1)
-            else:
-                vector_inputs = []
+            vector_inputs = None
 
         current = tensor_data[cur_idx][0].tolist()
         target = tensor_data[tar_idx][0].tolist()
@@ -205,13 +205,22 @@ def main():
         if args.model is not None:
             # Normalize inputs: input = (input - mean)/stddev
             if checkpoint['metadata']['normalize_images']:
-                v, m = torch.var_mean(image)
+                # Normalize per channel, so compute over height and width
+                v, m = torch.var_mean(image, dim=(2,3), keepdim=True)
                 image = (image - m) / v
+
+            if checkpoint['metadata']['encode_position']:
+                if position_mask is None:
+                    position_mask = createPositionMask(image.size(-2), image.size(-1)).cuda()
+                net_input = torch.cat((image, position_mask.expand(image.size(0), -1, -1, -1)), dim=1)
+            else:
+                net_input = image
+
             with torch.no_grad():
-                if 0 < len(vector_inputs):
-                    output = net(image, vector_inputs.cuda())
+                if vector_inputs is not None:
+                    output = net(net_input, vector_inputs.cuda())
                 else:
-                    output = net(image)
+                    output = net(net_input)
 
             # For debugging
             #if i < 32:

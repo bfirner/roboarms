@@ -347,7 +347,8 @@ def main():
 
             # Normalize inputs: input = (input - mean)/stddev
             if checkpoint['metadata']['normalize_images']:
-                v, m = torch.var_mean(new_frame)
+                # Normalize per channel, so compute over height and width
+                v, m = torch.var_mean(new_frame, dim=(1,2), keepdim=True)
                 new_frame = (new_frame - m) / v
 
             # For debugging
