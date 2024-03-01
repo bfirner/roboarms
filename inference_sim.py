@@ -7,6 +7,7 @@
 import argparse
 import cv2
 import ffmpeg
+import functools
 import numpy
 import pathlib
 import sys
@@ -28,7 +29,8 @@ sys.path.append('bee_analysis')
 
 from bee_analysis.utility.model_utility import (createModel2, hasNormalizers, restoreModel,
         restoreNormalizers)
-from bee_analysis.utility.video_utility import (vidSamplingCommonCrop)
+from bee_analysis.utility.train_utility import (createPositionMask)
+from bee_analysis.utility.video_utility import (processImage, vidSamplingCommonCrop)
  
 
 # Terminate inference when the user kills the program
@@ -258,6 +260,9 @@ def main():
         elif output_name == 'target_arm_position':
             output_locations[output_name] = slice(out_idx, out_idx+num_arm_joints)
             out_idx += num_arm_joints
+        elif output_name == 'target_xyz_position':
+            output_locations[output_name] = slice(out_idx, out_idx+3)
+            out_idx += 3
         elif output_name == 'target_rtz_position':
             output_locations[output_name] = slice(out_idx, out_idx+3)
             out_idx += 3
@@ -276,23 +281,11 @@ def main():
         round(args.video_scale*args.crop_x_offset), round(args.video_scale*args.crop_y_offset))
     scaled_height = round(args.resolution[0] * args.video_scale)
     scaled_width = round(args.resolution[1] * args.video_scale)
-    def process_image(img, channels = 1):
-        # The internet
-        # (https://stackoverflow.com/questions/23853632/which-kind-of-interpolation-best-for-resizing-image
-        # from https://docs.opencv.org/3.4/da/d54/group__imgproc__transform.html#ga47a974309e9102f5f08231edc7e7529d)
-        # suggests using INTER_AREA when downscaling images.
-        scaled_image = cv2.resize(img, (scaled_width, scaled_height), interpolation=cv2.INTER_AREA)
-        cropped_image = scaled_image[crop_y:crop_y+patch_height, crop_x:crop_x+patch_width, :]
-        # The opencv image form has channels last
-        if channels > 1:
-            cuda_image = torch.tensor(numpy.array([cropped_image[:,:,channel] for channel in range(3)])).cuda()
-        else:
-            cuda_image = torch.tensor(cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)).float().expand(1, -1, -1).cuda()
-        # Give some hints to memory management
-        del cropped_image
-        del scaled_image
-        return cuda_image
 
+    # TODO Only handle monochrome images currently
+    channels = 1
+    process_image = functools.partial(processImage, (scaled_height, scaled_width), (channels,
+        out_height, out_width), (crop_y, crop_x))
 
     # Initialize robot arm position and goal information
 
@@ -325,6 +318,8 @@ def main():
     # Fixed size window
     cv2.namedWindow("arm sim", cv2.WINDOW_NORMAL)
 
+    position_mask = None
+
     with torch.no_grad():
         # Keep simulating until the exit event is called.
         while not exit_event.is_set():
@@ -343,13 +338,18 @@ def main():
             # position.
             # The image from the renderer is in the img variable. Process it for DNN input.
             # This will also convert the image to grayscale
-            new_frame = process_image(img)
+            new_frame = torch.tensor(process_image(img)).cuda()
 
             # Normalize inputs: input = (input - mean)/stddev
             if checkpoint['metadata']['normalize_images']:
                 # Normalize per channel, so compute over height and width
                 v, m = torch.var_mean(new_frame, dim=(1,2), keepdim=True)
                 new_frame = (new_frame - m) / v
+
+            if checkpoint['metadata']['encode_position']:
+                if position_mask is None:
+                    position_mask = createPositionMask(new_frame.size(-2), new_frame.size(-1)).cuda()
+                new_frame = torch.cat((new_frame, position_mask), dim=0)
 
             # For debugging
             #print("Frame min and max are {} and {}".format(new_frame[0].min(), new_frame[0].max()))
@@ -365,8 +365,9 @@ def main():
                     vector_input_buffer[0, outslice].copy_(torch.tensor(cur_joints))
                 elif input_name == 'current_rtz_position':
                     print("Cur joints are {}".format(cur_joints))
+                    print("\tXYZ location is {}".format(computeGripperPosition(cur_joints, segment_lengths)))
                     current_rtz_position = XYZToRThetaZ(*computeGripperPosition(cur_joints, segment_lengths))
-                    print("Writing location {} into slice {}".format(current_rtz_position, outslice))
+                    print("Writing cur rtz location {} into slice {}".format(current_rtz_position, outslice))
                     vector_input_buffer[0, outslice].copy_(torch.tensor(current_rtz_position))
                 elif input_name == 'goal_mark':
                     # Convert the goal character into a number. 'A' becomes 0, and the rest of the
@@ -386,7 +387,7 @@ def main():
             else:
                 # Expand a batch dimension and forward
                 net_out = net(new_frame.expand(1, -1, -1, -1), vector_input_buffer)
-                print("Vector inputs at are {}".format(vector_input_buffer))
+                print("Vector inputs are {}".format(vector_input_buffer))
             if denormalizer is not None:
                 net_out = denormalizer(net_out)
             predicted_distance = 1.0
@@ -395,6 +396,25 @@ def main():
                 print("predicted goal distance is {}".format(predicted_distance))
             if 'target_arm_position' in output_locations:
                 next_position = net_out[0, output_locations['target_arm_position']].tolist()
+            elif "target_xyz_position" in checkpoint['metadata']['labels']:
+                predictions = net_out[0, output_locations['target_xyz_position']].tolist()
+                print("Network predicted xyz: {}".format(predictions))
+                # Solve for the joint positions
+                next_rtz_position = XYZToRThetaZ(*predictions)
+                middle_joints = rSolver(next_rtz_position[0], next_rtz_position[2], segment_lengths)
+                middle_joints = rSolver(predictions[0], predictions[2], segment_lengths)
+                cur_joints = [
+                    # Waist
+                    predictions[1],
+                    # Shoulder
+                    middle_joints[0],
+                    # Elbow
+                    middle_joints[1],
+                    # Wrist angle
+                    middle_joints[2],
+                    # Wrist rotate
+                    0.0,
+                ]
             elif "target_rtz_position" in checkpoint['metadata']['labels']:
                 predictions = net_out[0, output_locations['target_rtz_position']].tolist()
                 # Solve for the joint positions
@@ -412,7 +432,6 @@ def main():
                     # Wrist rotate
                     0.0,
                 ]
-                print("joints updating to {}".format(cur_joints))
             elif 'rtz_classifier' in output_locations:
                 current_xyz = computeGripperPosition(cur_joints, segment_lengths)
                 print("Network raw prediction: {}".format(net_out))

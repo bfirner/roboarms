@@ -23,7 +23,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import (Image, JointState)
 
 # Includes from this project
-from arm_utility import (ArmReplay, computeGripperPosition, getDistance, interpretRTZPrediction, rSolver, RThetaZtoXYZ, XYZToRThetaZ)
+from arm_utility import (ArmReplay, computeGripperPosition, getDistance, interpretRTZPrediction,
+    rSolver, RThetaZtoXYZ, RTZClassifierNames, XYZToRThetaZ)
 from data_utility import vidSamplingCommonCrop
 
 
@@ -170,7 +171,7 @@ class RosHandler(Node):
         super(RosHandler, self).__del__()
 
 
-def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dnn_outputs,
+def dnn_inference_thread(robot_joint_names, position_queue, checkpoint, dnn_outputs,
         vector_inputs, goal_sequence, video_args, normalize_video, update_delay_s, exit_event):
     """Puts positions into the position queue.
 
@@ -188,8 +189,6 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
     """
     print("DNN inferencing thread started.")
 
-    # Create the model and load the weights from the given checkpoint.
-    checkpoint = torch.load(model_checkpoint)
     # Get the model arguments from the training metadata stored in the checkpoint
     net = createModel2(checkpoint['metadata']['modeltype'], checkpoint['metadata']['model_args'])
     restoreModel(model_checkpoint, net)
@@ -259,7 +258,7 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
             output_locations[output_name] = slice(out_idx, out_idx+3)
             out_idx += len(robot_joint_names)
         elif output_name == 'rtz_classifier':
-            rtz_classifier_size = 10
+            rtz_classifier_size = len(RTZClassifierNames())
             output_locations[output_name] = slice(out_idx, out_idx+rtz_classifier_size)
             out_idx += rtz_classifier_size
         else:
@@ -288,7 +287,8 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
             new_frame = new_frame.cuda()
             # Normalize inputs: input = (input - mean)/stddev
             if checkpoint['metadata']['normalize_images']:
-                v, m = torch.var_mean(new_frame)
+                # Normalize per channel, so compute over height and width
+                v, m = torch.var_mean(new_frame, dim=(1,2), keepdim=True)
                 new_frame = (new_frame - m) / v
 
             # Set up vector inputs
@@ -301,7 +301,6 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
                     vector_input_buffer[0, outslice].copy_(torch.tensor(joint_positions))
                 elif input_name == 'current_rtz_position':
                     current_rtz_position = XYZToRThetaZ(*computeGripperPosition(joint_positions, segment_lengths=[0.104, 0.158, 0.147, 0.175]))
-                    print("Writing location {} into slice {}".format(current_rtz_position, outslice))
                     vector_input_buffer[0, outslice].copy_(torch.tensor(current_rtz_position))
                 elif input_name == 'goal_mark':
                     vector_input_buffer[0, outslice.start] = goal_sequence[goal_idx]
@@ -320,9 +319,24 @@ def dnn_inference_thread(robot_joint_names, position_queue, model_checkpoint, dn
                 net_out = denormalizer(net_out)
             predicted_distance = 1.0
             if 'goal_distance' in dnn_outputs:
-                net_out[0, output_locations['goal_distance']].item()
+                predicted_distance = net_out[0, output_locations['goal_distance']].item()
             if 'target_arm_position' in output_locations:
                 next_position = net_out[0, output_locations['target_arm_position']].tolist()
+            if 'target_rtz_position' in output_locations:
+                next_rtz_position = net_out[0, output_locations['target_rtz_position']].tolist()
+                middle_joints = rSolver(next_rtz_position[0], next_rtz_position[2], segment_lengths=[0.104, 0.158, 0.147, 0.175])
+                next_position = [
+                    # Waist
+                    next_rtz_position[1],
+                    # Shoulder
+                    middle_joints[0],
+                    # Elbow
+                    middle_joints[1],
+                    # Wrist angle
+                    middle_joints[2],
+                    # Wrist rotate
+                    0.0,
+                ]
             elif 'rtz_classifier' in output_locations:
                 # TODO This was a training parameter, it should be pulled from the dataset
                 # Setting the threshold to 1cm here
@@ -435,7 +449,7 @@ def main():
         '--model_checkpoint',
         type=str,
         required=True,
-        help='File with model weights to restore.')
+        help='File with model weights to restore and model metadata.')
     parser.add_argument(
         '--interval',
         type=int,
@@ -454,22 +468,6 @@ def main():
         required=False,
         default="/image_raw",
         help='The name of the image topic.')
-    parser.add_argument(
-        '--dnn_outputs',
-        type=str,
-        # Support an array of strings to have multiple different label targets.
-        nargs='+',
-        required=False,
-        default=["target_position"],
-        help='DNN outputs')
-    parser.add_argument(
-        '--vector_inputs',
-        type=str,
-        # Support an array of strings to have multiple different label targets.
-        nargs='+',
-        required=False,
-        default=[],
-        help='DNN vector inputs')
     parser.add_argument(
         '--goal_sequence',
         type=int,
@@ -504,28 +502,8 @@ def main():
     # Create the robot
     bot = ArmReplay(args.puppet_model, args.puppet_name, puppet_calibration, position_commands)
 
-    # Find the size of the model image inputs, vector inputs, and outputs
-    vector_input_size = 0
-    for input_name in args.vector_inputs:
-        # Vector inputs are size 1 unless they are the current robot position
-        if input_name == 'current_position':
-            # Generally, current_arm_position is the correct output to use
-            vector_input_size += len(bot.arm.group_info.joint_names) + 3
-        if input_name == 'current_arm_position':
-            vector_input_size += len(bot.arm.group_info.joint_names)
-        else:
-            vector_input_size += 1
-
-    dnn_output_size = 0
-    for output_name in args.dnn_outputs:
-        # Outputs are size 1 unless they are the predicted robot position
-        if output_name == 'target_position':
-            # Generally, target_arm_position is the correct output to use
-            dnn_output_size += len(bot.arm.group_info.joint_names) + 3
-        elif output_name == 'target_arm_position':
-            dnn_output_size += len(bot.arm.group_info.joint_names)
-        else:
-            dnn_output_size += 1
+    # Load the checkpoint for access to the model metadata
+    checkpoint = torch.load(args.model_checkpoint)
 
     # Arguments for RosHandler constructor
     video_args = {
@@ -544,8 +522,8 @@ def main():
     # TODO FIXME This needs the calibration so that it can correct the ROS joint position messages
     # Start the DNN inference thread before calling the blocking start_robot() call.
     inferencer = Thread(target=dnn_inference_thread, args=(bot.arm.group_info.joint_names,
-        bot.position_commands, args.model_checkpoint, args.dnn_outputs,
-        args.vector_inputs, args.goal_sequence, video_args, args.normalize_video, (1. / args.cps), exit_event)).start()
+        bot.position_commands, checkpoint, checkpoint['metadata']['labels'],
+        checkpoint['metadata']['vector_inputs'], args.goal_sequence, video_args, args.normalize_video, (1. / args.cps), exit_event)).start()
 
     # This will block until interrupted
     bot.start_robot()
