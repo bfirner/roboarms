@@ -53,6 +53,52 @@ def makeTransformationMatrix(destination_origin, destination_bases, source_origi
 
     return source_to_dest
 
+# TODO To be able to render labels onto an image, we need some utility functions
+# 1. Label to original image
+# sim_utility.cameraCoordinateToImage((x, y, z), fovs_in_radians, resolution) -> (y, x)
+# 1.1 Requires storing image metadata along with the video
+# 2. Common cropping functions to process tensors with marked labels in the same way as the training images
+# 2.1 Move the process_img function (and setup code) out of inference_sim.py and into
+#     bee_analysis.utility.video_utility so that it can be used for all cropping during dataprep,
+#     inference, and debugging.
+def cameraCoordinateToImage(camera_coordinates, camera_fovs_rads, resolution):
+    """Convert a camera coordinates tuple into image coordinate space.
+
+    The range for the image will treated as the range 0 to height or width, but coordinates can be returned that lie outside of the image.
+    The returned coordinates (x offset from left side, y offset from top)
+    Arguments:
+        camera_coordinates (x, y, z): Coordinates of the object
+        camera_fovs_rads (vfov, hfov): FOVs, in radians, of the pinhole image
+        resolution list([int]): The height and width of the image
+    Returns:
+        (x, y) coordinates on the image
+    """
+    # Everything is in a right hand rule system, where x is the distance, y is a lateral offset (left/counter clockwise is positive), and z is the
+    # vertical offset (up is positive).
+    # This is different from the image coordinate system, where the origin is the upper left, y is the vertical offset (down is positive), and x
+    # is the horizontal offset (right is positive)
+
+    # First, convert the coordinates to angles, and from that convert them to fov offsets, and from there convert them into pixels.
+    # This is the atan of z/x. Positive is up.
+    y_angle = math.atan(camera_coordinates[2] / camera_coordinates[0])
+    # This is the atan of y/x. Positive is left.
+    x_angle = math.atan(camera_coordinates[1] / camera_coordinates[0])
+
+    # Fraction of a half image offset based upon the angle and the FOV
+    y_center_offset = y_angle / camera_fovs_rads[0]
+    x_center_offset = x_angle / camera_fovs_rads[1]
+
+    # Positive is up, so subtract the offset from the image center
+    y_origin_offset = 0.5 - y_center_offset
+    # Positive is left, so subtract the offset from the image center
+    x_origin_offset = 0.5 - x_center_offset
+
+    image_y = round(y_origin_offset * resolution[0])
+    image_x = round(x_origin_offset * resolution[1])
+
+    return (image_x, image_y)
+
+
 class JointStatesToImage(object):
 
     def __init__(self, segment_lengths, arm_origin, arm_bases, camera_fovs_deg, camera_origin, camera_bases, resolution):
@@ -100,30 +146,7 @@ class JointStatesToImage(object):
         The range for the image will treated as the range 0 to height or width, but coordinates can be returned that lie outside of the image.
         The returned coordinates (x offset from left side, y offset from top)
         """
-        # Everything is in a right hand rule system, where x is the distance, y is a lateral offset (left/counter clockwise is positive), and z is the
-        # vertical offset (up is positive).
-        # This is different from the image coordinate system, where the origin is the upper left, y is the vertical offset (down is positive), and x
-        # is the horizontal offset (right is positive)
-
-        # First, convert the coordinates to angles, and from that convert them to fov offsets, and from there convert them into pixels.
-        # This is the atan of z/x. Positive is up.
-        y_angle = math.atan(camera_coordinates[2] / camera_coordinates[0])
-        # This is the atan of y/x. Positive is left.
-        x_angle = math.atan(camera_coordinates[1] / camera_coordinates[0])
-
-        # Fraction of a half image offset based upon the angle and the FOV
-        y_center_offset = y_angle / self.camera_fovs_rads[0]
-        x_center_offset = x_angle / self.camera_fovs_rads[1]
-
-        # Positive is up, so subtract the offset from the image center
-        y_origin_offset = 0.5 - y_center_offset
-        # Positive is left, so subtract the offset from the image center
-        x_origin_offset = 0.5 - x_center_offset
-
-        image_y = round(y_origin_offset * self.resolution[0])
-        image_x = round(x_origin_offset * self.resolution[1])
-
-        return (image_x, image_y)
+        return cameraCoordinateToImage(camera_coordinates, self.camera_fovs_rads, self.resolution)
 
     def render(self, joint_states):
         """Render a simple grayscale image of an arm on a white background with a pinhole view.

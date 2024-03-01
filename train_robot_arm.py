@@ -40,8 +40,9 @@ from embedded_perturbation import (
 import sys
 sys.path.append('bee_analysis')
 
-from bee_analysis.utility.dataset_utility import (decodeUTF8Strings, extractVectors, getImageSize, getVectorSize)
+from bee_analysis.utility.dataset_utility import (decodeUTF8Strings, extractVectors, getImageSize, getVectorSize, makeDataset)
 from bee_analysis.utility.eval_utility import (OnlineStatistics, RegressionResults, WorstExamples)
+from bee_analysis.utility.flatbin_dataset import FlatbinDataset
 from bee_analysis.utility.model_utility import (restoreModelAndState)
 from bee_analysis.utility.train_utility import (LabelHandler, evalEpoch, trainEpoch,
         updateWithoutScalerOriginal)
@@ -54,7 +55,35 @@ from bee_analysis.models.resnet import (ResNet18, ResNet34)
 from bee_analysis.models.resnext import (ResNext18, ResNext34, ResNext50)
 from bee_analysis.models.convnext import (ConvNextExtraTiny, ConvNextTiny, ConvNextSmall, ConvNextBase)
 
-
+################ For memory debugging
+#import linecache
+#import tracemalloc
+#
+#def display_top(snapshot, key_type='lineno', limit=10):
+#    snapshot = snapshot.filter_traces((
+#        tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+#        tracemalloc.Filter(False, "<unknown>"),
+#    ))
+#    top_stats = snapshot.statistics(key_type)
+#
+#    print("Top %s lines" % limit)
+#    for index, stat in enumerate(top_stats[:limit], 1):
+#        frame = stat.traceback[0]
+#        print("#%s: %s:%s: %.1f KiB"
+#              % (index, frame.filename, frame.lineno, stat.size / 1024))
+#        line = linecache.getline(frame.filename, frame.lineno).strip()
+#        if line:
+#            print('    %s' % line)
+#
+#    other = top_stats[limit:]
+#    if other:
+#        size = sum(stat.size for stat in other)
+#        print("%s other: %.1f KiB" % (len(other), size / 1024))
+#    total = sum(stat.size for stat in top_stats)
+#    print("Total allocated size: %.1f KiB" % (total / 1024))
+#
+#tracemalloc.start()
+################ For memory debugging
 
 # Argument parser setup for the program.
 parser = argparse.ArgumentParser(
@@ -63,7 +92,7 @@ parser.add_argument(
     'dataset',
     nargs='+',
     type=str,
-    help='Dataset for training.')
+    help='Datasets for training. All should either be .tar (webdataset) files or .bin (flatbin) files.')
 parser.add_argument(
     '--sample_frames',
     type=int,
@@ -144,7 +173,7 @@ parser.add_argument(
     type=str,
     required=False,
     default=None,
-    help='Evaluate with the given dataset.')
+    help='Evaluate with the given dataset. Should be a .tar or a .bin dataset')
 parser.add_argument(
     '--save_top_n',
     type=int,
@@ -169,6 +198,12 @@ parser.add_argument(
     default=False,
     action='store_true',
     help='Set this to disable deterministic training.')
+parser.add_argument(
+    '--encode_position',
+    required=False,
+    default=False,
+    action='store_true',
+    help='Encode the pixel positions with another image channel.')
 parser.add_argument(
     '--labels',
     type=str,
@@ -236,7 +271,7 @@ for label_str in args.labels:
     label_decode_strs.append(label_str)
 
 # Vector inputs (if there are none then the slice will be an empty range)
-vector_range = slice(label_range.stop, label_range.stop + len(args.vector_inputs))
+vector_range = slice(len(decode_strs), len(decode_strs) + len(args.vector_inputs))
 for vector_str in args.vector_inputs:
     decode_strs.append(vector_str)
     vector_decode_strs.append(vector_str)
@@ -319,15 +354,20 @@ if not args.normalize_outputs:
 else: 
     print("Reading dataset to compute label statistics for normalization.")
     label_stats = [OnlineStatistics() for _ in range(label_size)]
-    label_dataset = (
-        wds.WebDataset(args.dataset)
-        .to_tuple(*label_decode_strs)
-    )
+    label_dataset =  makeDataset(args.dataset, label_decode_strs)
+    #label_dataset = (
+    #    wds.WebDataset(args.dataset)
+    #    .to_tuple(*label_decode_strs)
+    #)
     # Loop through the dataset and compile label statistics
-    label_dataloader = torch.utils.data.DataLoader(label_dataset, num_workers=0, batch_size=1)
-    for data in label_dataloader:
-        for label, stat in zip(extractVectors(data, slice(0, label_size))[0].tolist(), label_stats):
+    #label_dataloader = torch.utils.data.DataLoader(label_dataset, num_workers=0, batch_size=1)
+    #for data in label_dataloader:
+    for data in label_dataset:
+        flat_data = torch.cat([torch.tensor(datum) for datum in data], dim=0)
+        for label, stat in zip(flat_data.tolist(), label_stats):
             stat.sample(label)
+    # Clean up the open files from dataloading
+    del label_dataset
     # Now record the statistics
     label_means = []
     label_stddevs = []
@@ -391,30 +431,34 @@ dl_tuple = LoopTuple(*([None] * len(decode_strs)))
 # TODO Use use .map_tuple to preprocess samples during the dataloading
 channels = 1
 image_decode_str = "torchl" if 1 == channels else "torchrgb"
-dataset = (
-    #wds.WebDataset(args.dataset, shardshuffle=True)
-    #.shuffle(20000//in_frames, initial=20000//in_frames)
-    wds.WebDataset(args.dataset, shardshuffle=False)
-    .shuffle(1000//in_frames, initial=1000//in_frames)
-    # TODO This will hardcode all images to single channel numpy float images, but that isn't clear
-    # from any documentation.
-    # TODO Why "l" rather than decode to torch directly with "torchl"?
-    .decode(image_decode_str)
-    .to_tuple(*decode_strs)
-)
+dataset = makeDataset(args.dataset, decode_strs)
+#dataset = (
+#    #wds.WebDataset(args.dataset, shardshuffle=True)
+#    #.shuffle(20000//in_frames, initial=20000//in_frames)
+#    wds.WebDataset(args.dataset, shardshuffle=False)
+#    .shuffle(1000//in_frames, initial=1000//in_frames)
+#    # TODO This will hardcode all images to single channel numpy float images, but that isn't clear
+#    # from any documentation.
+#    # TODO Why "l" rather than decode to torch directly with "torchl"?
+#    .decode(image_decode_str)
+#    .to_tuple(*decode_strs)
+#)
 
 image_size = getImageSize(args.dataset, decode_strs)
 print(f"Decoding images of size {image_size}")
 
 batch_size = args.batch_size
-dataloader = torch.utils.data.DataLoader(dataset, num_workers=0, batch_size=batch_size)
+#dataloader = torch.utils.data.DataLoader(dataset.batched(batch_size), num_workers=0, batch_size=None)
+dataloader = torch.utils.data.DataLoader(dataset, num_workers=1, batch_size=batch_size,
+        pin_memory=True, drop_last=False, persistent_workers=False)
 
 if args.evaluate:
-    eval_dataset = (
-        wds.WebDataset(args.evaluate)
-        .decode(image_decode_str)
-        .to_tuple(*decode_strs)
-    )
+    eval_dataset = makeDataset(args.evaluate, decode_strs)
+    #eval_dataset = (
+    #    wds.WebDataset(args.evaluate)
+    #    .decode(image_decode_str)
+    #    .to_tuple(*decode_strs)
+    #)
     eval_dataloader = torch.utils.data.DataLoader(eval_dataset, num_workers=0, batch_size=batch_size)
 
 
@@ -424,8 +468,11 @@ lr_scheduler = None
 use_amp = False
 # Store the model arguments and save them with the model. This will simplify model loading and
 # recreation later.
+in_channels = in_frames
+if args.encode_position:
+    in_channels += 1
 model_args = {
-    'in_dimensions': (in_frames, image_size[1], image_size[2]),
+    'in_dimensions': (in_channels, image_size[1], image_size[2]),
     'out_classes': label_handler.size(),
 }
 # True to use a lower learning rate for the first epoch
@@ -456,10 +503,11 @@ elif 'resnet34' == args.modeltype:
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
 elif 'bennet' == args.modeltype:
     net = BenNet(**model_args).cuda()
-    #optimizer = torch.optim.AdamW(net.parameters(), lr=10e-5)
-    #optimizer = torch.optim.Adam(net.parameters(), lr=10e-3)
     lr = 0.001 if args.lr is None else args.lr
-    optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.5, weight_decay=0.001, nesterov=True)
+    #optimizer = torch.optim.AdamW(net.parameters(), lr=10e-5)
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr)
+    #optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.5, weight_decay=0.001, nesterov=True)
+    #milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20, args.epochs_to_lr_decay+60]
     milestones = [args.epochs_to_lr_decay, args.epochs_to_lr_decay+20]
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.5)
 elif 'compactingbennet' == args.modeltype:
@@ -532,23 +580,31 @@ print(f"Model is {net}")
 # Normalize status vector input by adjust the weight and bias in the linear layer.
 # Not all networks support this feature and there is no reason to normalize if the weights and bias
 # values will be restored from a checkpoint.
-if args.normalize_status and not args.resume_from:
+if 0 < vector_input_size and args.normalize_status and not args.resume_from:
     print("Reading the dataset to compute vector input statistics for normalization.")
     vector_stats = [OnlineStatistics() for _ in range(vector_input_size)]
-    vector_dataset = (
-        wds.WebDataset(args.dataset)
-        .to_tuple(*vector_decode_strs)
-    )
+    vector_dataset = makeDataset(args.dataset, vector_decode_strs)
+    print("The vector decode strings are {}".format(vector_decode_strs))
+    #vector_dataset = (
+    #    wds.WebDataset(args.dataset)
+    #    .to_tuple(*vector_decode_strs)
+    #)
     # TODO Loop through the dataset and compile vector inputs statistics
-    vector_dataloader = torch.utils.data.DataLoader(vector_dataset, num_workers=0, batch_size=1)
-    for data in vector_dataloader:
-        for vector, stat in zip(extractVectors(data, slice(0, vector_input_size))[0].tolist(), vector_stats):
+    #vector_dataloader = torch.utils.data.DataLoader(vector_dataset, num_workers=0, batch_size=1)
+    #for data in vector_dataloader:
+    for data in vector_dataset:
+        flat_data = torch.cat([torch.tensor(datum) for datum in data], dim=0)
+        for vector, stat in zip(flat_data.tolist(), vector_stats):
             stat.sample(vector)
+    # Clean up the open files from dataloading
+    del vector_dataset
     # Now record the statistics
     vector_means = []
     vector_stddevs = []
     for stat in vector_stats:
         vector_means.append(stat.mean())
+        # If we've chosen to train with something that has only a single value then it blows up
+        # here. That is okay, you shouldn't be training with constant values.
         vector_stddevs.append(math.sqrt(stat.variance()))
 
     print("Normalizing status vector inputs with means {} and stddevs {}".format(vector_means, vector_stddevs))
@@ -584,6 +640,15 @@ if not args.no_train:
     # Save models when the error is minimized
     min_err = 1000
     for epoch in range(args.epochs):
+        ########## For memory debugging
+        #snapshot = tracemalloc.take_snapshot()
+        #display_top(snapshot)
+        #top_stats = snapshot.statistics('lineno')
+        #print("[ Top 10 ]")
+        #for stat in top_stats[:10]:
+        #    print(stat)
+        ########## For memory debugging
+
         totals = RegressionResults(size=label_handler.size(), names=label_handler.names())
         worst_training = None
         if args.save_worst_n:
@@ -594,7 +659,7 @@ if not args.no_train:
         trainEpoch(net=net, optimizer=optimizer, scaler=scaler, label_handler=label_handler,
                 train_stats=totals, dataloader=dataloader, vector_range=vector_range, train_frames=in_frames,
                 normalize_images=args.normalize, loss_fn=loss_fn, nn_postprocess=nn_postprocess,
-                worst_training=worst_training, skip_metadata=True)
+                encode_position=args.encode_position, worst_training=worst_training, skip_metadata=True)
         # Adjust learning rate according to the learning rate schedule
         if lr_scheduler is not None:
             lr_scheduler.step()
@@ -618,6 +683,7 @@ if not args.no_train:
                 'model_args': model_args,
                 'normalize_images': args.normalize,
                 'normalize_labels': args.normalize_outputs,
+                'encode_position': args.encode_position,
                 },
             }, args.outname)
 
@@ -901,7 +967,8 @@ if args.evaluate is not None:
                     net_input = torch.cat(raw_input, dim=1)
                 # Normalize inputs: input = (input - mean)/stddev
                 if args.normalize:
-                    v, m = torch.var_mean(net_input)
+                    # Normalize per channel, so compute over height and width
+                    v, m = torch.var_mean(net_input, dim=(2,3), keepdim=True)
                     net_input = (net_input - m) / v
 
                 vector_input=None
