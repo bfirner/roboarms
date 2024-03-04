@@ -712,14 +712,15 @@ if not args.no_train:
                 "normalizer_state_dict": normalizer.state_dict() if normalizer is not None else None,
                 # Store some metadata to make it easier to recreate and use this model
                 "metadata": {
-                    'modeltype': args.modeltype,
-                    'labels': args.labels,
-                    'vector_inputs': args.vector_inputs,
-                    'convert_idx_to_classes': False,
-                    'label_size': label_handler.size(),
-                    'model_args': model_args,
-                    'normalize_images': args.normalize,
-                    'normalize_labels': args.normalize_outputs,
+                        'modeltype': args.modeltype,
+                        'labels': args.labels,
+                        'vector_inputs': args.vector_inputs,
+                        'convert_idx_to_classes': False,
+                        'label_size': label_handler.size(),
+                        'model_args': model_args,
+                        'normalize_images': args.normalize,
+                        'normalize_labels': args.normalize_outputs,
+                        'encode_position': args.encode_position,
                     },
                 }, (args.outname + ".epoch_{}".format(epoch)))
 

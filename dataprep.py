@@ -253,7 +253,7 @@ def main():
         if 1 < len(vid_paths):
             print("Too many (expecing 1) db files found in {}".format(rosdir))
             return
-        vid_path = vid_paths[0]
+        vid_path = str(vid_paths[0])
 
         ################
         # Data loading
@@ -308,6 +308,7 @@ def main():
                 labels['behavior'][current_frame] == 'keep' and
                 video_timestamps[current_frame] <= arm_data.last_time()):
                 # TODO FIXME Verify the timestamps of the records being used for interpolation
+                # TODO FIXME A bug has been observed where the end frames have invalid timestamps
                 current_data = arm_data.interpolate(video_timestamps[current_frame])
                 # Fetch the next state after some end effector movement distance to be the prediction
                 # target
@@ -418,6 +419,9 @@ def main():
                             goal_record = arm_data.records[int(frame_nums[-1]) + next_mark_idx]
                             goal_pos = computeGripperPosition(getCalibratedJoints(goal_record, ordered_joint_names, calibration))
                             sample_labels["goal_distance"] = getDistance(cur_pos, goal_pos)
+                            sample_labels["goal_distance_x"] = goal_pos[0] - cur_pos[0]
+                            sample_labels["goal_distance_y"] = goal_pos[1] - cur_pos[1]
+                            sample_labels["goal_distance_z"] = goal_pos[2] - cur_pos[2]
 
                             # Go backwards to create several different status inputs for previous mark
                             # distances.

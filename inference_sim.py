@@ -278,7 +278,7 @@ def main():
     # Need to handle the video by using the provided scaling, cropping, and offset parameters
     out_width, out_height, crop_x, crop_y = vidSamplingCommonCrop(
         args.resolution[0], args.resolution[1], patch_height, patch_width, args.video_scale,
-        round(args.video_scale*args.crop_x_offset), round(args.video_scale*args.crop_y_offset))
+        args.crop_x_offset, args.crop_y_offset)
     scaled_height = round(args.resolution[0] * args.video_scale)
     scaled_width = round(args.resolution[1] * args.video_scale)
 
@@ -377,6 +377,7 @@ def main():
                     print("Goal mark is {}".format(vector_input_buffer[0, outslice]))
                 elif input_name[:len("goal_distance_prev_")] == "goal_distance_prev_":
                     vector_input_buffer[0, outslice] = prev_goal_distance
+            print("Cur rtz position is {}".format(XYZToRThetaZ(*computeGripperPosition(cur_joints, segment_lengths))))
 
             # goal_mark determines the state to feed back to the network via the vector inputs
             # goal_distance is used to determine when to switch goals.
@@ -390,6 +391,7 @@ def main():
                 print("Vector inputs are {}".format(vector_input_buffer))
             if denormalizer is not None:
                 net_out = denormalizer(net_out)
+
             predicted_distance = 1.0
             if 'goal_distance' in dnn_outputs:
                 predicted_distance = net_out[0, output_locations['goal_distance']].item()
@@ -401,11 +403,11 @@ def main():
                 print("Network predicted xyz: {}".format(predictions))
                 # Solve for the joint positions
                 next_rtz_position = XYZToRThetaZ(*predictions)
+                print("Converted into rtz: {}".format(next_rtz_position))
                 middle_joints = rSolver(next_rtz_position[0], next_rtz_position[2], segment_lengths)
-                middle_joints = rSolver(predictions[0], predictions[2], segment_lengths)
                 cur_joints = [
                     # Waist
-                    predictions[1],
+                    next_rtz_position[1],
                     # Shoulder
                     middle_joints[0],
                     # Elbow

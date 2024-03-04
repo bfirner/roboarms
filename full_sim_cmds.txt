@@ -5,7 +5,7 @@ prefix="test_synthetic"
 prefix="test_synthetic_45"
 
 dataset="$prefix"
-dataprep_args="--shuffle --arm_calibration configs/synth_calibration.yaml --video_prefix sim_video --crop_x_offset -200 --video_scale 0.5 --width 400 --height 280 --sample_prob 0.25 --crop_noise 0 --prediction_distance 0.01 --yaml_records records.yaml"
+dataprep_args="--shuffle --arm_calibration configs/synth_calibration.yaml --video_prefix sim_video --crop_x_offset -100 --video_scale 0.5 --width 400 --height 280 --sample_prob 0.25 --crop_noise 0 --prediction_distance 0.01 --yaml_records records.yaml"
 train_archive="$prefix.tar"
 
 # Relative RTZ model training
@@ -21,13 +21,13 @@ train_archive="$prefix.tar"
 #           --lr 0.0004 --epochs_to_lr_decay 5 --epochs 400 --batch_size 64"
 # Target RTZ
 #train_args="--labels target_xyz_position goal_distance --normalize --normalize_status --loss_fun L1Loss --modeltype bennet --vector_inputs goal_mark --lr 0.001 --epochs 500 --batch_size 64 --epochs_to_lr_decay 105"
-train_args="--labels target_xyz_position goal_distance --normalize --normalize_status --loss_fun L1Loss --modeltype bennet --lr 0.001 --epochs 100 --batch_size 64 --epochs_to_lr_decay 50 --encode_position"
+train_args="--labels goal_distance_x goal_distance_y goal_distance_z goal_distance --normalize --loss_fun MSELoss --modeltype bennet --lr 0.001 --epochs 100 --batch_size 64 --epochs_to_lr_decay 50"
 
 #modelname="sim_models/20240118_test_synthetic.pyt"
 modelname="sim_models/20240226_test_synthetic.pyt"
 
 do_datagen=false
-do_dataprep=true
+do_dataprep=false
 do_shuffle=false
 do_flatbin=true
 do_training=true
@@ -59,7 +59,8 @@ fi
 
 if [[ $do_flatbin == true ]]; then
     echo "Converting webdataset to flatbin."
-    data_targets="0.png target_rtz_position goal_distance goal_mark rtz_classifier current_rtz_position"
+    data_targets="0.png target_rtz_position goal_distance goal_mark current_rtz_position"
+    data_targets="${data_targets} goal_distance_x goal_distance_y goal_distance_z"
     data_targets="${data_targets} current_arm_position current_xyz_position target_arm_position target_xyz_position metadata_cur_frame"
     python3 bee_analysis/utility/webdataset_to_flatbin.py --entries $data_targets --output $prefix.bin $prefix.tar
     train_archive="$prefix.bin"
@@ -92,4 +93,4 @@ fi
 #python3 inference_arm.py --crop_x_offset 140 --video_scale 0.5 --width 400 --height 280 --cps 3 --goal_sequence 0 --out_channels 1 --dnn_outputs target_arm_position --modeltype bennet --model_checkpoint $modelname
 
 echo "Test with:"
-echo python3 inference_sim.py --camera_bases $cam_bases --camera_coordinates $cam_coords --video_scale 0.5 --crop_x_offset -200 --model_checkpoint $modelname 30 configs/letter_config.yaml configs/action_config.yaml
+echo python3 inference_sim.py --camera_bases $cam_bases --camera_coordinates $cam_coords --video_scale 0.5 --crop_x_offset -100 --model_checkpoint $modelname 30 configs/letter_config.yaml configs/action_config.yaml
