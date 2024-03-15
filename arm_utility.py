@@ -295,6 +295,60 @@ def rtzDiffToClassifier(current_rtz_position, target_rtz_position, prediction_di
         math.pi/300. < current_rtz_position[1] - target_rtz_position[1],
     ]]
 
+def dnnToActionFunction(dnn_labels, label_locations):
+    """Return a function that will convert the DNN output to an xyz coordinate.
+
+    Argument:
+        dnn_labels (list[str]): The names of DNN outputs in the order that they appear.
+        label_locations (list[int or slice]): Locations of DNN outputs
+    Returns:
+        (function or None, relative_movement:bool)
+
+    """
+    # A flag that indicates if the conversion function will also need the current coordinates
+    relative_movement = False
+    if "target_arm_position" in dnn_labels:
+        nn_joint_slice = label_locations['target_arm_position']
+        dnn_output_to_xyz = lambda out: computeGripperPosition(out[nn_joint_slice].tolist())
+    elif "target_xyz_position" in dnn_labels:
+        dnn_output_to_xyz = lambda out: out[label_locations['target_xyz_position']].tolist()
+    elif "target_rtz_position" in dnn_labels:
+        rtz_slice = label_locations['target_rtz_position']
+        dnn_output_to_xyz = lambda out: RThetaZtoXYZ(*out[rtz_slice].tolist())
+    elif "current_xyz_position" in dnn_labels:
+        dnn_output_to_xyz = lambda out: out[label_locations['current_xyz_position']].tolist()
+    elif ("goal_distance_x" in dnn_labels and
+            "goal_distance_y" in dnn_labels and
+            "goal_distance_z" in dnn_labels):
+        x_label = label_locations['goal_distance_x']
+        y_label = label_locations['goal_distance_y']
+        z_label = label_locations['goal_distance_z']
+        def distancesToTarget(x, y, z, dnn_out):
+            return [x + dnn_out[x_label].item(),
+                    y + dnn_out[y_label].item(),
+                    z + dnn_out[z_label].item()]
+        dnn_output_to_xyz = distancesToTarget
+        # Indicate that movement is relative to the current position
+        relative_movement = True
+    elif "rtz_classifier" in dnn_labels:
+        # Interpreting this output is more complicated than the others since there are multiple
+        # steps. We will just call a utility function from arm_utility
+        rtz_classify_slice = label_locations['rtz_classifier']
+        def processRTZClassifier(x, y, z, dnn_out):
+            # TODO This was a training parameter, it should be pulled from the dataset
+            # Setting the threshold to 1cm here
+            threshold = 0.01
+            cur_rtz = XYZToRThetaZ(x, y, z)
+            next_rtz = interpretRTZPrediction(*cur_rtz, threshold, dnn_out[rtz_classify_slice].tolist())
+            return RThetaZtoXYZ(*next_rtz)
+
+        dnn_output_to_xyz = processRTZClassifier
+        # Indicate that movement is relative to the current position
+        relative_movement = True
+    else:
+        dnn_output_to_xyz = None
+    return (dnn_output_to_xyz, relative_movement)
+
 def getWaistCoords(theta0, segment_G):
     waist_x = 0.
     waist_y = 0.

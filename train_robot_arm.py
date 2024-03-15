@@ -40,7 +40,8 @@ from embedded_perturbation import (
 import sys
 sys.path.append('bee_analysis')
 
-from bee_analysis.utility.dataset_utility import (decodeUTF8Strings, extractVectors, getImageSize, getVectorSize, makeDataset)
+from bee_analysis.utility.dataset_utility import (decodeUTF8Strings, extractVectors, getImageSize,
+        getUnflatVectorSize, getVectorSize, makeDataset)
 from bee_analysis.utility.eval_utility import (OnlineStatistics, RegressionResults, WorstExamples)
 from bee_analysis.utility.flatbin_dataset import FlatbinDataset
 from bee_analysis.utility.model_utility import (restoreModelAndState)
@@ -320,19 +321,13 @@ print(f"Training with dataset {args.dataset}")
 # If we are converting to a one-hot encoding output then we need to check the argument that
 # specifies the number of output elements. Otherwise we can check the number of elements in the
 # webdataset.
-label_size = getVectorSize(args.dataset, decode_strs, label_range)
+label_sizes = getUnflatVectorSize(args.dataset, decode_strs, label_range)
 
 label_names = None
 # See if we can deduce the label names
 label_names = []
 for label_idx, out_elem in enumerate(range(label_range.start, label_range.stop)):
     label_elements = getVectorSize(args.dataset, decode_strs, slice(out_elem, out_elem+1))
-    # TODO Not being used, not because it isn't a good idea, but because it is very difficult to
-    # figure out how to balance loss across multiple joints of a robot arm
-    # Change the loss function to accommodate calculating distance from the joints
-    #if 'target_arm_position' == args.labels[label_idx]:
-    #    joint_range = slice(len(label_names), len(label_names) + label_elements)
-    #    loss_fn = functools.partial(lossWithDistance, loss_fn=getattr(torch.nn, args.loss_fun)(), joint_range=joint_range)
 
     # Give this output the label name directly or add a number if multiple outputs come from
     # this label
@@ -353,12 +348,8 @@ if not args.normalize_outputs:
     normalizer = None
 else: 
     print("Reading dataset to compute label statistics for normalization.")
-    label_stats = [OnlineStatistics() for _ in range(label_size)]
+    label_stats = [OnlineStatistics() for _ in range(sum(label_sizes))]
     label_dataset =  makeDataset(args.dataset, label_decode_strs)
-    #label_dataset = (
-    #    wds.WebDataset(args.dataset)
-    #    .to_tuple(*label_decode_strs)
-    #)
     # Loop through the dataset and compile label statistics
     #label_dataloader = torch.utils.data.DataLoader(label_dataset, num_workers=0, batch_size=1)
     #for data in label_dataloader:
@@ -392,7 +383,7 @@ else:
         print("Some labels have extremely low variance--they may be fixed values. Check your dataset.")
         exit(1)
 
-label_handler = LabelHandler(label_size=label_size, label_range=label_range, label_names=label_names)
+label_handler = LabelHandler(label_size=sum(label_sizes), label_range=label_range, label_names=label_names)
 
 # The label value may need to be adjusted, to normalize before calculating loss.
 if normalizer is not None:
@@ -432,17 +423,6 @@ dl_tuple = LoopTuple(*([None] * len(decode_strs)))
 channels = 1
 image_decode_str = "torchl" if 1 == channels else "torchrgb"
 dataset = makeDataset(args.dataset, decode_strs)
-#dataset = (
-#    #wds.WebDataset(args.dataset, shardshuffle=True)
-#    #.shuffle(20000//in_frames, initial=20000//in_frames)
-#    wds.WebDataset(args.dataset, shardshuffle=False)
-#    .shuffle(1000//in_frames, initial=1000//in_frames)
-#    # TODO This will hardcode all images to single channel numpy float images, but that isn't clear
-#    # from any documentation.
-#    # TODO Why "l" rather than decode to torch directly with "torchl"?
-#    .decode(image_decode_str)
-#    .to_tuple(*decode_strs)
-#)
 
 image_size = getImageSize(args.dataset, decode_strs)
 print(f"Decoding images of size {image_size}")
@@ -454,11 +434,6 @@ dataloader = torch.utils.data.DataLoader(dataset, num_workers=1, batch_size=batc
 
 if args.evaluate:
     eval_dataset = makeDataset(args.evaluate, decode_strs)
-    #eval_dataset = (
-    #    wds.WebDataset(args.evaluate)
-    #    .decode(image_decode_str)
-    #    .to_tuple(*decode_strs)
-    #)
     eval_dataloader = torch.utils.data.DataLoader(eval_dataset, num_workers=0, batch_size=batch_size)
 
 
@@ -627,7 +602,7 @@ if args.resume_from is not None:
 # Note that we can't just use the label names since we may be getting classes by converting a
 # numeric input into a one-hot vector
 class_names = []
-for i in range(label_size):
+for i in range(sum(label_sizes)):
     class_names.append(f"{i}")
 
 if not args.no_train:
@@ -680,6 +655,7 @@ if not args.no_train:
                 'vector_inputs': args.vector_inputs,
                 'convert_idx_to_classes': False,
                 'label_size': label_handler.size(),
+                'label_sizes': label_sizes,
                 'model_args': model_args,
                 'normalize_images': args.normalize,
                 'normalize_labels': args.normalize_outputs,
@@ -717,6 +693,7 @@ if not args.no_train:
                         'vector_inputs': args.vector_inputs,
                         'convert_idx_to_classes': False,
                         'label_size': label_handler.size(),
+                        'label_sizes': label_sizes,
                         'model_args': model_args,
                         'normalize_images': args.normalize,
                         'normalize_labels': args.normalize_outputs,
@@ -954,7 +931,7 @@ if args.evaluate is not None:
     net.eval()
     with torch.no_grad():
         # Make a confusion matrix or loss statistics
-        totals = RegressionResults(size=label_size)
+        totals = RegressionResults(size=sum(label_sizes))
         with open(args.outname.split('.')[0] + ".log", 'w') as logfile:
             logfile.write('video_path,frame,time,label,prediction\n')
             for batch_num, dl_tuple in enumerate(eval_dataloader):

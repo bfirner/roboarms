@@ -17,9 +17,9 @@ from embedded_perturbation import generatePerturbedXYZ
 import sys
 sys.path.append('bee_analysis')
 
-from arm_utility import computeGripperPosition, RThetaZtoXYZ
+from arm_utility import dnnToActionFunction, computeGripperPosition
 from bee_analysis.utility.dataset_utility import (extractVectors, extractUnflatVectors, makeDataset)
-from bee_analysis.utility.model_utility import (createModel2, hasNormalizers, restoreModel, restoreNormalizers)
+from bee_analysis.utility.model_utility import (createModel2, getLabelLocations, hasNormalizers, restoreModel, restoreNormalizers)
 from bee_analysis.utility.train_utility import (createPositionMask)
 
 
@@ -88,32 +88,8 @@ def main():
 
 
         # A flag that indicates if the conversion function will also need the current coordinates
-        relative_movement = False
-        if "target_arm_position" in checkpoint['metadata']['labels']:
-            nn_joint_slice = slice(labels.index('target_arm_position'), labels.index('target_arm_position')+5)
-            dnn_output_to_xyz = lambda out: computeGripperPosition(out[nn_joint_slice].tolist())
-        elif "target_xyz_position" in checkpoint['metadata']['labels']:
-            dnn_output_to_xyz = lambda out: out.tolist()
-        elif "target_rtz_position" in checkpoint['metadata']['labels']:
-            rtz_slice = slice(labels.index('target_rtz_position'), labels.index('target_rtz_position')+3)
-            dnn_output_to_xyz = lambda out: RThetaZtoXYZ(*out[rtz_slice].tolist())
-        elif "current_xyz_position" in checkpoint['metadata']['labels']:
-            dnn_output_to_xyz = lambda out: out.tolist()
-        elif "rtz_classifier" in checkpoint['metadata']['labels']:
-            # Interpreting this output is more complicated than the others since there are multiple
-            # steps. We will just call a utility function from arm_utility
-            rtz_classify_slice = slice(labels.index('rtz_classifier'), labels.index('rtz_classifier')+len(RTZClassifierNames()))
-            def processRTZClassifier(x, y, z, dnn_out):
-                # TODO This was a training parameter, it should be pulled from the dataset
-                # Setting the threshold to 1cm here
-                threshold = 0.01
-                cur_rtz = XYZToRThetaZ(x, y, z)
-                next_rtz = interpretRTZPrediction(*cur_rtz, threshold, dnn_out[rtz_classify_slice].tolist())
-                return RThetaZtoXYZ(*next_rtz)
-
-            dnn_output_to_xyz = processRTZClassifier
-            # Indicate that movement is relative to the current position
-            relative_movement = True
+        label_locations = getLabelLocations(checkpoint['metadata'])
+        dnn_output_to_xyz, relative_movement = dnnToActionFunction(labels, label_locations)
 
         # The current arm position must be decoded so that it can be in the output data.
         if 'current_arm_position' not in decode_strs:

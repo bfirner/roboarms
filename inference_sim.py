@@ -20,14 +20,14 @@ from threading import Event
 
 # Includes from this project
 import sim_utility
-from arm_utility import (computeGripperPosition, interpretRTZPrediction, rSolver, RTZClassifierNames, XYZToRThetaZ)
+from arm_utility import (computeGripperPosition, dnnToActionFunction, interpretRTZPrediction, rSolver, RTZClassifierNames, XYZToRThetaZ)
 
 # Insert the bee analysis repository into the path so that the python modules of the git submodule
 # can be used properly.
 import sys
 sys.path.append('bee_analysis')
 
-from bee_analysis.utility.model_utility import (createModel2, hasNormalizers, restoreModel,
+from bee_analysis.utility.model_utility import (createModel2, getLabelLocations, hasNormalizers, restoreModel,
         restoreNormalizers)
 from bee_analysis.utility.train_utility import (createPositionMask)
 from bee_analysis.utility.video_utility import (processImage, vidSamplingCommonCrop)
@@ -251,29 +251,9 @@ def main():
     vector_input_buffer = torch.zeros([1, vector_size]).float().cuda()
 
     # Mark the locations of the model outputs
-    output_locations = {}
-    out_idx = 0
-    for output_name in dnn_outputs:
-        if output_name == 'target_position':
-            output_locations[output_name] = slice(out_idx, out_idx+num_arm_joints + 3)
-            out_idx += num_arm_joints + 3
-        elif output_name == 'target_arm_position':
-            output_locations[output_name] = slice(out_idx, out_idx+num_arm_joints)
-            out_idx += num_arm_joints
-        elif output_name == 'target_xyz_position':
-            output_locations[output_name] = slice(out_idx, out_idx+3)
-            out_idx += 3
-        elif output_name == 'target_rtz_position':
-            output_locations[output_name] = slice(out_idx, out_idx+3)
-            out_idx += 3
-        elif output_name == 'rtz_classifier':
-            rtz_classifier_size = len(RTZClassifierNames())
-            output_locations[output_name] = slice(out_idx, out_idx+rtz_classifier_size)
-            out_idx += rtz_classifier_size
-        else:
-            output_locations[output_name] = out_idx
-            out_idx +=1
-
+    output_locations = getLabelLocations(checkpoint['metadata'])
+    # A flag that indicates if the conversion function will also need the current coordinates
+    dnn_output_to_xyz, relative_movement = dnnToActionFunction(checkpoint['metadata']['labels'], output_locations)
 
     # Need to handle the video by using the provided scaling, cropping, and offset parameters
     out_width, out_height, crop_x, crop_y = vidSamplingCommonCrop(
@@ -396,66 +376,32 @@ def main():
             if 'goal_distance' in dnn_outputs:
                 predicted_distance = net_out[0, output_locations['goal_distance']].item()
                 print("predicted goal distance is {}".format(predicted_distance))
-            if 'target_arm_position' in output_locations:
-                next_position = net_out[0, output_locations['target_arm_position']].tolist()
-            elif "target_xyz_position" in checkpoint['metadata']['labels']:
-                predictions = net_out[0, output_locations['target_xyz_position']].tolist()
-                print("Network predicted xyz: {}".format(predictions))
-                # Solve for the joint positions
-                next_rtz_position = XYZToRThetaZ(*predictions)
-                print("Converted into rtz: {}".format(next_rtz_position))
-                middle_joints = rSolver(next_rtz_position[0], next_rtz_position[2], segment_lengths)
-                cur_joints = [
-                    # Waist
-                    next_rtz_position[1],
-                    # Shoulder
-                    middle_joints[0],
-                    # Elbow
-                    middle_joints[1],
-                    # Wrist angle
-                    middle_joints[2],
-                    # Wrist rotate
-                    0.0,
-                ]
-            elif "target_rtz_position" in checkpoint['metadata']['labels']:
-                predictions = net_out[0, output_locations['target_rtz_position']].tolist()
-                # Solve for the joint positions
-                print("Network predicted rtz: {}".format(predictions))
-                middle_joints = rSolver(predictions[0], predictions[2], segment_lengths)
-                cur_joints = [
-                    # Waist
-                    predictions[1],
-                    # Shoulder
-                    middle_joints[0],
-                    # Elbow
-                    middle_joints[1],
-                    # Wrist angle
-                    middle_joints[2],
-                    # Wrist rotate
-                    0.0,
-                ]
-            elif 'rtz_classifier' in output_locations:
-                current_xyz = computeGripperPosition(cur_joints, segment_lengths)
-                print("Network raw prediction: {}".format(net_out))
-                predictions = net_out[0, output_locations['rtz_classifier']].tolist()
-                next_rtz_position = interpretRTZPrediction(*XYZToRThetaZ(*current_xyz), touch_threshold, predictions)
-                print("Network predicted rtz: {}".format(next_rtz_position))
-                # Solve for the joint positions
-                middle_joints = rSolver(next_rtz_position[0], next_rtz_position[2], segment_lengths)
-                cur_joints = [
-                    # Waist
-                    next_rtz_position[1],
-                    # Shoulder
-                    middle_joints[0],
-                    # Elbow
-                    middle_joints[1],
-                    # Wrist angle
-                    middle_joints[2],
-                    # Wrist rotate
-                    0.0,
-                ]
+
+            # Only provide the current location if this is a relative predictor
+            if not relative_movement:
+                dnn_xyz = dnn_output_to_xyz(net_out[0])
             else:
-                raise RuntimeError("No target position for robot in DNN outputs!")
+                current_xyz = computeGripperPosition(cur_joints, segment_lengths)
+                dnn_xyz = dnn_output_to_xyz(*current_xyz, net_out[0])
+            print("Network predicted xyz: {}".format(dnn_xyz))
+            # Solve for the joint positions
+            next_rtz_position = XYZToRThetaZ(*dnn_xyz)
+            print("Converted into rtz: {}".format(next_rtz_position))
+            middle_joints = rSolver(next_rtz_position[0], next_rtz_position[2], segment_lengths)
+            cur_joints = [
+                # Waist
+                next_rtz_position[1],
+                # Shoulder
+                middle_joints[0],
+                # Elbow
+                middle_joints[1],
+                # Wrist angle
+                middle_joints[2],
+                # Wrist rotate
+                0.0,
+            ]
+
+            print("Actual goal location is {}".format(letter_centers[actions['sequence'][goal_idx]]))
 
             # TODO The threshold shouldn't be a magic variable
             if predicted_distance < 0.01:

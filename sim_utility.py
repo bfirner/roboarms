@@ -61,13 +61,14 @@ def makeTransformationMatrix(destination_origin, destination_bases, source_origi
 # 2.1 Move the process_img function (and setup code) out of inference_sim.py and into
 #     bee_analysis.utility.video_utility so that it can be used for all cropping during dataprep,
 #     inference, and debugging.
+
 def cameraCoordinateToImage(camera_coordinates, camera_fovs_rads, resolution):
     """Convert a camera coordinates tuple into image coordinate space.
 
     The range for the image will treated as the range 0 to height or width, but coordinates can be returned that lie outside of the image.
     The returned coordinates (x offset from left side, y offset from top)
     Arguments:
-        camera_coordinates (x, y, z): Coordinates of the object
+        camera_coordinates (x, y, z): Coordinates of the object in world space from the camera reference frame
         camera_fovs_rads (vfov, hfov): FOVs, in radians, of the pinhole image
         resolution list([int]): The height and width of the image
     Returns:
@@ -78,25 +79,294 @@ def cameraCoordinateToImage(camera_coordinates, camera_fovs_rads, resolution):
     # This is different from the image coordinate system, where the origin is the upper left, y is the vertical offset (down is positive), and x
     # is the horizontal offset (right is positive)
 
+    # If the x coordinate is negative then the image is behind the camera. The corner should map to
+    # a place below the screen.
+    if camera_coordinates[0] < 0:
+        return (-1, -1)
+
     # First, convert the coordinates to angles, and from that convert them to fov offsets, and from there convert them into pixels.
     # This is the atan of z/x. Positive is up.
     y_angle = math.atan(camera_coordinates[2] / camera_coordinates[0])
     # This is the atan of y/x. Positive is left.
     x_angle = math.atan(camera_coordinates[1] / camera_coordinates[0])
 
-    # Fraction of a half image offset based upon the angle and the FOV
-    y_center_offset = y_angle / camera_fovs_rads[0]
-    x_center_offset = x_angle / camera_fovs_rads[1]
+    # Fraction of the image offset based upon the angle and the FOV
+    y_fraction = y_angle / camera_fovs_rads[0]
+    x_fraction = x_angle / camera_fovs_rads[1]
 
-    # Positive is up, so subtract the offset from the image center
-    y_origin_offset = 0.5 - y_center_offset
+    # Positive is up, so subtract the offset from the image center. The 0 point on the image is the
+    # top.
+    y_origin_offset = 0.5 - y_fraction
     # Positive is left, so subtract the offset from the image center
-    x_origin_offset = 0.5 - x_center_offset
+    x_origin_offset = 0.5 - x_fraction
 
     image_y = round(y_origin_offset * resolution[0])
     image_x = round(x_origin_offset * resolution[1])
 
     return (image_x, image_y)
+
+
+class RenderObject(object):
+
+    def __init__(self, buffer, buffer_size, world_coordinates):
+        """
+        Arguments:
+            buffer (cv2 image): The image buffer with the render object.
+            buffer_size (width, height): The size of the image buffer.
+            coordinates (list[float]): World space coordinates of the corners of the object,
+                                       clockwise from the lower left.
+        """
+        self.buffer = buffer
+        self.width = buffer_size[0]
+        self.height = buffer_size[1]
+        self.coordinates = world_coordinates
+        # Clockwise from the lower left corner!!!
+        self.src_points = numpy.float32([[0, 0], [0, self.height], [self.width, self.height], [self.width, 0]])
+
+    def getBuffer(self):
+        return self.buffer
+
+    def getCoordinates(self):
+        return self.coordinates
+
+    def sourcePoints(self):
+        return self.src_points
+
+
+def basisFromYawPitchRoll(yaw, pitch, roll) -> torch.FloatTensor:
+    """Create a basis vector from yaw, pitch, and roll."""
+    yaw_matrix = torch.tensor([
+        [math.cos(yaw), -math.sin(yaw), 0.], [math.sin(yaw), math.cos(yaw), 0.], [0., 0., 1.]])
+    pitch_matrix = torch.tensor([
+        [math.cos(pitch), 0., math.sin(pitch)], [0., 1., 0.], [-math.sin(pitch), 0., math.cos(pitch)]])
+    roll_matrix = torch.tensor([
+        [1., 0., 0.], [0., math.cos(roll), -math.sin(roll)], [0., math.sin(roll), math.cos(roll)]])
+    return yaw_matrix.matmul(pitch_matrix).matmul(roll_matrix)
+
+
+class MobileEgoToImage(object):
+    """Usage:
+    1. Initialize
+    2. Add objects (letters) with addLetter
+    3. beginVideo
+    4. Sim loop:
+       1. moveEgo
+       2. writeFrame
+    5. endVideo
+    The save() function can also be used to save individual frames rather than a video.
+    """
+
+    def __init__(self, ego_origin, ego_pose, relative_camera_origin, camera_pose, camera_fovs_deg, resolution):
+        """Create a renderer for simple grayscale images of an arm on a white background with a pinhole view.
+
+        Arguments:
+            ego_origin      list([float]): World coordinates of the ego (x, y, z)
+            ego_pose          list(float): Yaw, pitch, and roll (in radians) of the ego.
+            relative_camera_origin list([float]): Relative coordinates of the camera, relative to ego
+            camera_pose       list(float): Yaw, pitch, and roll (in radians) of the camera relative to ego
+            camera_fovs_deg list([float]): Vertical and horizontal fields of view (for a pinhole camera, in degrees)
+            resolution        list([int]): The height and width of the image
+        """
+        self.ego_position = [origin for origin in ego_origin]
+        self.ego_bases = basisFromYawPitchRoll(*ego_pose)
+        self.rel_camera_bases = basisFromYawPitchRoll(*camera_pose)
+        self.rel_camera_offset = self.rel_camera_bases.matmul(torch.tensor(relative_camera_origin))
+        self.camera_fovs_degs = camera_fovs_deg
+        self.camera_fovs_rads = [fov * math.pi / 180.0 for fov in camera_fovs_deg]
+        self.resolution = resolution
+        self.video_stream = None
+        # Colors. Recall that OpenCV images are in BGR order. The ground will be rendered as an
+        # object so it needs a transparency value.
+        self.sky_blue = (235, 206, 135)
+        self.transparent_grass_green = (23, 154, 0, 255)
+        # Objects that will be rendered
+        self.render_objects = []
+        # Add a ground object
+        # We could work out the math for the horizon line and the ground location, but it is far
+        # easier to simply add a large green square to the render objects instead.
+        ground = numpy.zeros([4, 4, 4], dtype=numpy.uint8)
+        ground[..., :] = self.transparent_grass_green
+        # Make ground tiles rather than handling things going out of view properly
+        tile_increment = 10.
+        for xoffset in range(6):
+            xbase = -3*tile_increment + 2*tile_increment * xoffset
+            for yoffset in range(4):
+                ybase = -2.5*tile_increment + 2*tile_increment * yoffset
+                ground_corners = [
+                        [xbase - tile_increment, ybase + tile_increment, 0.], [xbase + tile_increment, ybase + tile_increment, 0.],
+                        [xbase - tile_increment, ybase - tile_increment, 0.], [xbase - tile_increment, ybase - tile_increment, 0.]]
+                self.render_objects.append(RenderObject(ground, (4, 4), ground_corners))
+        # To transform from ego to camera coordinates. This will not need to be updated while
+        # running.
+        self.ego_to_camera = makeTransformationMatrix(self.rel_camera_offset, self.rel_camera_bases, [0., 0., 0.], [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]])
+        self.updateWorldToCamera()
+
+    def moveEgo(self, translations, rotations):
+        """Translate and rotate the ego vehicle relative to current position. Rotations are in radians."""
+        # Update ego position
+        self.ego_position = [position + delta for position, delta in zip(self.ego_position, translations)]
+        # Update the ego basis vectors for the new orientation
+        self.ego_bases = basisFromYawPitchRoll(*rotations).matmul(self.ego_bases)
+        self.updateWorldToCamera()
+
+    def setEgo(self, new_position, pose):
+        """Translate and rotate the ego vehicle to an new absolute state. Rotations are in radians."""
+        # Update ego position
+        self.ego_position = new_position
+        # Update the ego basis vectors for the new orientation
+        self.ego_bases = basisFromYawPitchRoll(*pose)
+        self.updateWorldToCamera()
+
+    def updateWorldToCamera(self):
+        #TODO FIXME This is a weird side effect function, maybe just call this once to make the
+        # matrix when render is called? Otherwise, this should be called at __init__ and after
+        # moveEgo
+        """Update the world to camera transformation matrix in self.world_to_camera"""
+        transformed_ego_position = self.ego_bases.matmul(torch.tensor(self.ego_position))
+        self.world_to_ego = makeTransformationMatrix(transformed_ego_position.tolist(), self.ego_bases, [0., 0., 0.], [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]])
+        self.world_to_camera = self.ego_to_camera.matmul(self.world_to_ego)
+        print("World to camera is now {}".format(self.world_to_camera))
+
+    def cameraCoordinateToImage(self, camera_coordinates):
+        """Convert a camera coordinates tuple into image coordinate space.
+
+        The range for the image will treated as the range 0 to height or width, but coordinates can be returned that lie outside of the image.
+        The returned coordinates (x offset from left side, y offset from top)
+        """
+        return cameraCoordinateToImage(camera_coordinates, self.camera_fovs_rads, self.resolution)
+
+    def render(self):
+        """Render a simple grayscale image of an arm on a white background with a pinhole view.
+
+        Arguments:
+            joint_states       list([float]): List of the five joint positions (waist, shoulder, elbow, wrist angle, wrist rotate)
+        Returns:
+            cv::image object
+        """
+        # Make a drawing buffer (height, width, channels) and fill it with sky
+        draw_buffer = numpy.zeros([self.resolution[0], self.resolution[1], 3], dtype=numpy.uint8)
+        draw_buffer[..., :] = self.sky_blue
+
+        for render_obj in self.render_objects:
+            draw_buffer = self.renderObjectToBackground(render_obj, draw_buffer)
+
+        return draw_buffer
+
+    def addLetter(self, character, char_coordinates):
+        """Adds the given character to the render objects at the given world space coordinates."""
+        # # Find the size and then make a buffer with the letter
+        char_size, baseline = cv2.getTextSize(character, fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1,
+            thickness=4)
+        char_width, char_height = char_size
+        char_img_height = char_height + baseline
+        # Correct value for RGB: 72, 60, 50. Open CV uses BGR.
+        transparent_taupe = (50, 60, 72, 255)
+        text_buffer = numpy.zeros((char_img_height, char_width, 4), dtype=numpy.uint8)
+        cv2.putText(img=text_buffer, text=character, org=(0, char_height),
+            fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=transparent_taupe, thickness=4,
+            lineType=cv2.LINE_AA)
+
+        self.render_objects.append(RenderObject(text_buffer, (char_width, char_img_height), char_coordinates))
+
+    def renderObjectToBackground(self, render_object, camera_view_buffer):
+        """Render a RenderObject onto the camera view and return the modified buffer."""
+        # Find the target points on the image by mapping from the provided points in world
+        # coordinates of the object corners onto the camera perspective.
+        target_world_coordinates = [self.world_to_camera.matmul(torch.tensor(coord + [1.0])) for coord in render_object.getCoordinates()]
+        target_points = numpy.float32([self.cameraCoordinateToImage(world_coordinates) for world_coordinates in target_world_coordinates])
+        tx_matrix = cv2.getPerspectiveTransform(render_object.sourcePoints(), target_points)
+        #print("DEBUG: object has world coordinates {}".format(target_world_coordinates))
+
+        # TODO FIXME Not all objects are fully visible. Check the corners of the target coordinates
+        # to get the necessary image width and size for the rendering area, then draw it onto the
+        # correct location, clipping if necessary.
+        xmin = round(min([x for x, _ in target_points]))
+        ymin = round(min([y for _, y in target_points]))
+        xmax = round(max([x for x, _ in target_points]))
+        ymax = round(max([y for _, y in target_points]))
+
+        #print("Target points are: {}".format(target_points))
+
+        # Not handling partially visible objects
+        if xmin > camera_view_buffer.shape[1] or ymin > camera_view_buffer.shape[0] or 0 >= ymax or 0 >= xmax or xmin == xmax or ymin == ymax:
+            # Nothing to render
+            return camera_view_buffer
+        # Removing things behind the camera
+        if xmin < 0 or ymin < 0:
+            return camera_view_buffer
+
+        #print("DEBUG: xmin {}, xmax {}, ymin {}, ymax {}".format(xmin, xmax, ymin, ymax))
+        warp_size = (xmax - xmin, ymax - ymin)
+
+        # Target area for warped image that is within the bounds of the target image
+        dest_x_begin = max(0, xmin)
+        dest_y_begin = max(0, ymin)
+        dest_x_end = min(camera_view_buffer.shape[1], xmax)
+        dest_y_end = min(camera_view_buffer.shape[0], ymax)
+
+        # The clipped source area from the warped patch itself
+        src_x_begin = max(0, dest_x_begin - xmin)
+        src_y_begin = max(0, dest_y_begin - ymin)
+        src_x_end = min(xmax - xmin, dest_x_end - xmin)
+        src_y_end = min(ymax - ymin, dest_y_end - ymin)
+
+        dest_range = (slice(dest_y_begin, dest_y_end), slice(dest_x_begin, dest_x_end))
+        src_range = (slice(src_y_begin, src_y_end), slice(src_x_begin, src_x_end))
+
+        #print("DEBUG: rendering visible object with warp size {} from {} onto {}".format(warp_size, src_range, dest_range))
+
+        ## TODO Running the code with known values, the above optimization isn't working
+        warp_size = (camera_view_buffer.shape[1], camera_view_buffer.shape[0])
+        dest_range = (slice(0, camera_view_buffer.shape[0]), slice(0, camera_view_buffer.shape[1]))
+        src_range = (slice(0, camera_view_buffer.shape[0]), slice(0, camera_view_buffer.shape[1]))
+
+        # Warp the object onto the buffer
+        # cv.INTER_AREA is being used to avoid loss of quality assuming that most images will be
+        # downscaled during the projection. This is not based upon any experiments.
+        warped_buffer = cv2.warpPerspective(src=render_object.getBuffer(), M=tx_matrix,
+                dsize=warp_size, flags=cv2.INTER_AREA)
+        warped_buffer = warped_buffer[src_range]
+
+        # Render onto background with the worst version of alpha support ever (meaning manual) by
+        # converting the alpha channel of the warped images into a mask, broadcasting it to the
+        # image size, and then multiplying by the warped image and the render target.
+        # TODO Use cv2.threshold to get a mask and then cv2.bitwise_and and cv2.bitwise_not to apply
+        # the mask and gets its inverse. That would save the multiplication here.
+        object_mask = warped_buffer[..., -1]/255
+        object_mask = numpy.repeat(object_mask[:, :, numpy.newaxis], 3, axis=2)
+        masked_object = object_mask * warped_buffer[:, :, :-1]
+        masked_buffer_patch = (1.0 - object_mask) * camera_view_buffer[dest_range]
+        redrawn_patch = cv2.add(masked_object.astype(numpy.uint8), masked_buffer_patch.astype(numpy.uint8))
+        camera_view_buffer[dest_range] = redrawn_patch
+
+        return camera_view_buffer
+
+    def save(self, path):
+        """Render and save the robot state into path."""
+        cv2.imwrite(path, self.render())
+
+    def beginVideo(self, path):
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')
+        # The order of height and width is not the same as expected of the buffer itself.
+        height_width = (self.resolution[1], self.resolution[0])
+        self.video_stream = cv2.VideoWriter(filename=path, fourcc=fourcc, fps=30.0, frameSize=height_width, isColor=True)
+        if not self.video_stream.isOpened():
+            print("Video creation failed, possibly due to avc1 codec. Retrying with mp4v codec.")
+            # OpenCV may not have been built with suppoprt for the h264 format
+            #add_codec("mp4", "mp4v")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            self.video_stream = cv2.VideoWriter(filename=path, fourcc=fourcc, fps=30.0, frameSize=height_width, isColor=True)
+        if self.video_stream is None:
+            raise RuntimeError("No supported codec found for video writing.")
+
+    def writeFrame(self):
+        if self.video_stream is not None:
+            image = self.render()
+            self.video_stream.write(image)
+
+    def endVideo(self):
+        self.video_stream.release()
+        self.video_stream = None
 
 
 class JointStatesToImage(object):
